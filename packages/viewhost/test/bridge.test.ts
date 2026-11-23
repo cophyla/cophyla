@@ -295,6 +295,52 @@ describe("bridge", () => {
     expect((bareOut[0] as RpcNotification).params).not.toHaveProperty("embed");
   });
 
+  test("a host that opens web tabs says webTabs in host.ready; host.webtab is its, for the sessions:write scope, and nowhere else", async () => {
+    const calls: { method: string; params: unknown }[] = [];
+    const host = async (method: string, params: unknown) => {
+      calls.push({ method, params });
+      if ((params as { op?: unknown }).op === "frobnicate") throw new Error("host.webtab needs an op");
+      return {};
+    };
+    const toCophylad: unknown[] = [];
+    const toView: RpcMessage[] = [];
+    const answer = (out: RpcMessage[], id: string) => out.find((f) => (f as { id: unknown }).id === id);
+    const tab = "wtb_01ARZ3NDEKTSV4RRFFQ69G5FB1";
+    const bridge = new Bridge({ manifest: MANIFEST, clientScopes: CLIENT.scopes, instance: 1, host, webTabs: true }, { toCophylad: (f) => toCophylad.push(f), toView: (f) => toView.push(f) });
+    bridge.ready(HELLO);
+    expect((toView[0] as RpcNotification).params).toMatchObject({ webTabs: true });
+    bridge.fromView(req("w1", "host.webtab", { op: "place", tab, rect: { x: 10, y: 20, width: 300, height: 200 } }));
+    bridge.fromView(req("w2", "host.webtab", { op: "go", tab, url: "https://example.com/" }));
+    bridge.fromView(req("w3", "host.webtab", { op: "frobnicate", tab }));
+    await Bun.sleep(0);
+    expect(toCophylad).toEqual([]);
+    expect(calls.map((c) => c.method)).toEqual(["host.webtab", "host.webtab", "host.webtab"]);
+    expect(calls[0]!.params).toEqual({ op: "place", tab, rect: { x: 10, y: 20, width: 300, height: 200 } });
+    expect(answer(toView, "w1")).toEqual({ jsonrpc: "2.0", id: "w1", result: {} });
+    expect(answer(toView, "w3")).toMatchObject({ error: { data: { code: "invalid", message: "host.webtab needs an op" } } });
+
+    // a view that may not change sessions: denied, the host not asked
+    const readOnly: RpcMessage[] = [];
+    const narrow = new Bridge({ manifest: { ...MANIFEST, scopes: ["sessions:read"] }, clientScopes: CLIENT.scopes, instance: 2, host, webTabs: true }, { toCophylad: () => {}, toView: (f) => readOnly.push(f) });
+    narrow.fromView(req("n1", "host.webtab", { op: "reload", tab }));
+    expect(answer(readOnly, "n1")).toMatchObject({ error: { data: { code: "denied", message: "view default lacks scope sessions:write" } } });
+    // a host with requests of its own but no web tabs (the desktop app elsewhere, the controller): unsupported, and no webTabs in host.ready
+    const elsewhere: RpcMessage[] = [];
+    const noTabs = new Bridge({ manifest: MANIFEST, clientScopes: CLIENT.scopes, instance: 3, host, embed: true }, { toCophylad: () => {}, toView: (f) => elsewhere.push(f) });
+    noTabs.ready(HELLO);
+    expect((elsewhere[0] as RpcNotification).params).not.toHaveProperty("webTabs");
+    noTabs.fromView(req("e1", "host.webtab", { op: "reload", tab }));
+    expect(answer(elsewhere, "e1")).toMatchObject({ error: { data: { code: "unsupported" } } });
+    // webTabs with no requests to answer them says none either
+    const bare: RpcMessage[] = [];
+    const noHost = new Bridge({ manifest: MANIFEST, clientScopes: CLIENT.scopes, instance: 4, webTabs: true }, { toCophylad: () => {}, toView: (f) => bare.push(f) });
+    noHost.ready(HELLO);
+    expect((bare[0] as RpcNotification).params).not.toHaveProperty("webTabs");
+    noHost.fromView(req("b1", "host.webtab", { op: "reload", tab }));
+    expect(answer(bare, "b1")).toMatchObject({ error: { data: { code: "unsupported" } } });
+    expect(calls).toHaveLength(3);
+  });
+
   test("host.ready names where the host serves the document frame, when it serves one", () => {
     const toView: RpcMessage[] = [];
     const bridge = new Bridge({ manifest: MANIFEST, clientScopes: CLIENT.scopes, instance: 1, docFrame: "http://doc.localhost/doc/frame.html" }, { toCophylad: () => {}, toView: (f) => toView.push(f) });
@@ -366,6 +412,23 @@ describe("bridge", () => {
     wide.fromView(req("r1", "direct.enable", {}));
     expect(toView.map((f) => (f as { method?: string }).method)).toEqual(["direct.state"]);
     expect(toCophylad.map((f) => f.method)).toEqual(["direct.enable"]);
+  });
+
+  test("a machine's ports are the remote scope's: listed, opened and closed by a view that holds it, and what it opened told it; refused to one that does not", () => {
+    const toCophylad: (RpcRequest & { id: string })[] = [];
+    const toView: RpcMessage[] = [];
+    const remote = new Bridge({ manifest: { ...MANIFEST, scopes: ["remote"] }, clientScopes: [...CLIENT.scopes, "remote"], instance: 4 }, { toCophylad: (f) => toCophylad.push(f as RpcRequest & { id: string }), toView: (f) => toView.push(f) });
+    remote.fromView(req("r1", "ports.list", { node: "node_01ARZ3NDEKTSV4RRFFQ69G5FAW" }));
+    remote.fromView(req("r2", "port.open", { node: "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", port: 3000 }));
+    remote.fromView(req("r3", "port.close", { id: "prt_01ARZ3NDEKTSV4RRFFQ69G5FP1" }));
+    remote.fromCophylad({ jsonrpc: "2.0", method: "port.state", params: { forwards: [] } });
+    expect(toCophylad.map((f) => f.method)).toEqual(["ports.list", "port.open", "port.close"]);
+    expect(toView.map((f) => (f as { method?: string }).method)).toEqual(["port.state"]);
+    const none = make();
+    for (const method of ["ports.list", "port.open", "port.close"]) none.bridge.fromView(req(method, method, {}));
+    none.bridge.fromCophylad({ jsonrpc: "2.0", method: "port.state", params: { forwards: [] } });
+    expect(none.toCophylad).toEqual([]);
+    expect(none.toView.map((f) => (f as { error?: { data: { message: string } } }).error?.data.message)).toEqual(["view default lacks scope remote", "view default lacks scope remote", "view default lacks scope remote"]);
   });
 
   test("notifications reach the view within its scopes only; foreign responses are ignored", () => {

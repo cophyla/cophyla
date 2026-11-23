@@ -319,6 +319,10 @@ export const requestFilters = {
   "remote.enable": { names: (p, self) => [{ node: p.node ?? self }] },
   "remote.disable": { names: (p, self) => [{ node: p.node ?? self }] },
   "remote.door": { names: (p, self) => [{ node: p.node ?? self }] },
+  // a machine's ports, by the machine; closing one this client opened is about nothing a limit cuts
+  "ports.list": { names: (p, self) => [{ node: p.node ?? self }] },
+  "port.open": { names: (p) => [{ node: p.node }] },
+  "port.close": { names: "open" },
   // how a node's sessions take agents' messages is its settings, a hold taken off them
   "agents.accept": { names: "global" },
   // a connection lets another user's agent into a terminal: the whole account's to make and end
@@ -355,6 +359,10 @@ export const requestFilters = {
   "tracker.set": { names: "global" },
   // a note is about its session: limited access lists the ones of the sessions it reaches, and changes none
   "note.list": { names: "open", result: (r, keep) => ({ ...r, notes: r.notes.filter((n) => keep({ session: n.session })) }) },
+  "webtab.list": { names: "open", result: (r, keep) => ({ ...r, tabs: r.tabs.filter((t) => keep({ session: t.session })) }) },
+  "webtab.open": { names: (p) => [{ session: p.session }] },
+  "webtab.close": { names: "global" },
+  "webtab.report": { names: "global" },
   "note.mark": { names: "global" },
   "note.dismiss": { names: "global" },
   "notes.get": { names: "global" },
@@ -440,6 +448,8 @@ export const notificationFilters = {
   "node.state": "global",
   "metrics.sample": (p) => ({ node: p.node, hosts: true }),
   "remote.state": (p) => ({ node: p.node }),
+  // the ports this client opened, sent to it alone
+  "port.state": "open",
   "direct.state": "global",
   // a client's own data channel and pipes, sent to it alone
   "direct.candidate": "open",
@@ -455,6 +465,7 @@ export const notificationFilters = {
   "tracked.state": (p) => ({ session: p.session }),
   "tracker.state": "global",
   "note.state": (p) => ({ session: p.session }),
+  "webtab.state": (p) => ({ session: p.session }),
   "notes.state": "global",
   "focus.state": "global",
   "lead.state": "global",

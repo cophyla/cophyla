@@ -339,10 +339,13 @@ describe("views: the real built-in directory", () => {
 
   test("the default view fits one message through the relay: its view.get answer, sealed and in base64, under the server's 4 MiB", () => {
     // A phone on the relay takes the view in one frame; the server closes a link sent a bigger one,
-    // and with it every tunnel on it. Room is left for the envelope and the seal.
+    // and with it every tunnel on it. Room is left for the envelope and the seal: the seal adds a
+    // 16-byte tag before the base64 (packages/relay/src/tunnel.ts) and the server's envelope a few
+    // hundred bytes, so 16 KiB is many times what they take. Past it, the view must shrink (pdf.js,
+    // 1.6 MB of it, could load only when a PDF opens) or the relay carry it in pieces.
     const answer = JSON.stringify({ jsonrpc: "2.0", id: 1, result: views.get("default") });
     const relayed = Math.ceil(Buffer.byteLength(answer) / 3) * 4;
-    expect(relayed).toBeLessThan(4 * 1024 * 1024 - 64 * 1024);
+    expect(relayed).toBeLessThan(4 * 1024 * 1024 - 16 * 1024);
   });
 
   test("every src and href in the default view's entry names a served file, and every .ts transpiles", () => {

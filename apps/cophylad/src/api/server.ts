@@ -191,6 +191,8 @@ export interface RelayHost {
 }
 
 export interface ApiDeps {
+  /** The web tabs beside agents' chats; absent, no hello opens them and `/cdp/` answers nothing. */
+  webTabs?: WebTabsSeam;
   config: Config;
   log: Logger;
   gate: Gate;
@@ -292,8 +294,23 @@ export interface ListenerOptions {
   peer?: (address: string) => string;
 }
 
+/** One agent's Playwright on the web tabs' debugging endpoint, as the server hands its socket on. */
+export interface CdpSocket {
+  open(agent: { send(text: string): void; close(code?: number, reason?: string): void }): void;
+  message(text: string): void;
+  close(): void;
+}
+
+/** The web tabs, as the server needs them: who opens them, and the debugging endpoint agents' Playwright reaches. */
+export interface WebTabsSeam {
+  /** A client's hello said it is the desktop app that opens web tabs, on loopback. */
+  hello(client: Client): void;
+  /** The socket for `/cdp/<token>`, or why there is none (with the HTTP status to answer). */
+  cdp(token: string): CdpSocket | { refuse: string; status: number };
+}
+
 interface Connection {
-  kind: "client" | "node" | "remote";
+  kind: "client" | "node" | "remote" | "cdp";
   client?: Client;
   listener: ListenerKind;
   /** The origin this socket reached the node on, from the request's `Host`. */
@@ -318,6 +335,8 @@ interface Connection {
   nodeHandler?: NodeSocketHandler;
   /** A remote-desktop stream socket, bridged to the web viewer. */
   bridge?: Bridge;
+  /** An agent's Playwright on the web tabs' debugging endpoint. */
+  cdp?: CdpSocket;
   /** The connection over this socket, for a client socket. */
   conn?: Conn;
   /** The client shows a stream page through a forwarder of its own (`hello`'s `forward`). */
@@ -439,6 +458,7 @@ export function startApi(deps: ApiDeps, opts: ListenerOptions = {}): ApiServer {
           deps.bus.on("tracker.state", (state) => broadcast("tracker.state", state)),
           deps.bus.on("note.state", (note) => broadcast("note.state", note)),
           deps.bus.on("notes.state", (state) => broadcast("notes.state", state)),
+          deps.bus.on("webtab.state", (tab) => broadcast("webtab.state", tab)),
           deps.bus.on("workspace.state", (workspace) => registry.broadcastWorkspace(workspace)),
           deps.bus.on("chat.message", (message) => broadcast("chat.message", { message })),
           deps.bus.on("chat.delta", (delta) => broadcast("chat.delta", delta)),
@@ -904,6 +924,7 @@ export function startApi(deps: ApiDeps, opts: ListenerOptions = {}): ApiServer {
       uncount(ws);
       sockets.set(client.id, ws);
       registry.add(client, socketOf(ws), ws.data.listener, ws);
+      if (p.webTabs && ws.data.listener === "loopback" && client.kind === "ui") deps.webTabs?.hello(client);
       send(ws, success(req.id, result));
       log.info("client connected", { client: client.id, kind: client.kind, name: client.name, via: client.via, ...(controller ? { controller: controller.id } : {}) });
       welcome(portOf(ws), client);
@@ -1175,6 +1196,14 @@ export function startApi(deps: ApiDeps, opts: ListenerOptions = {}): ApiServer {
       // The harness hooks are loopback's alone: nothing on the LAN answers them.
       const hook = listener === "loopback" && deps.hooks ? /^\/hooks\/(claude|codex|muse)$/.exec(url.pathname) : null;
       if (hook) return handleHook(req, srv, hook[1] as HookHarness, deps.hooks!, log.child("hooks"));
+      // So is the web tabs' debugging endpoint the sessions Cophyla starts point their Playwright at.
+      const cdp = listener === "loopback" && deps.webTabs ? /^\/cdp\/([^/]{1,200})$/.exec(url.pathname) : null;
+      if (cdp) {
+        const socket = deps.webTabs!.cdp(decodeURIComponent(cdp[1]!));
+        if ("refuse" in socket) return new Response(socket.refuse, { status: socket.status, headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" } });
+        if (srv.upgrade(req, { data: { kind: "cdp", listener, origin, provisional: newId("client"), failedClaims: 0, remote, cdp: socket } satisfies Connection })) return undefined;
+        return new Response("expected a websocket", { status: 426 });
+      }
       // So is every agent session's MCP server, which the shim each one runs hands its lines to.
       if (listener === "loopback" && deps.agents && url.pathname === AGENTS_PATH) return handleAgents(req, srv, deps.agents, log.child("agentmsg"));
       // So are the chat's own session's endpoints: its tools, and the further parts of what it is told.
@@ -1209,6 +1238,10 @@ export function startApi(deps: ApiDeps, opts: ListenerOptions = {}): ApiServer {
       closeOnBackpressureLimit: true,
       idleTimeout: 960,
       open(ws) {
+        if (ws.data.kind === "cdp") {
+          ws.data.cdp!.open({ send: (text) => void ws.send(text), close: (code, reason) => ws.close(code ?? 1000, reason) });
+          return;
+        }
         if (ws.data.kind === "remote") {
           deps.remote!.ws.open(ws.data.bridge!, (data) => void ws.send(data), () => ws.close(1000, "session ended"));
           return;
@@ -1226,6 +1259,10 @@ export function startApi(deps: ApiDeps, opts: ListenerOptions = {}): ApiServer {
           return;
         }
         const text = typeof raw === "string" ? raw : Buffer.from(raw).toString("utf8");
+        if (ws.data.kind === "cdp") {
+          ws.data.cdp!.message(text);
+          return;
+        }
         if (ws.data.kind === "node") {
           ws.data.nodeHandler?.message(text);
           return;
@@ -1233,6 +1270,10 @@ export function startApi(deps: ApiDeps, opts: ListenerOptions = {}): ApiServer {
         if (ws.data.conn) messageConn(ws.data.conn, text);
       },
       close(ws, code, reason) {
+        if (ws.data.kind === "cdp") {
+          ws.data.cdp!.close();
+          return;
+        }
         if (ws.data.kind === "remote") {
           deps.remote!.ws.close(ws.data.bridge!);
           return;
@@ -1448,8 +1489,8 @@ export function startApi(deps: ApiDeps, opts: ListenerOptions = {}): ApiServer {
   };
 }
 
-/** The requests a relayed client still gets answered by the node it is on: its own files, its own file manager, its own phones (and their relay and push rows), its own viewer, its own data channel, its own membership. */
-const LOCAL_ONLY = new Set(["view.stage", "session.reveal", "transfer.reveal", "pair.start", "browser.invite", "lan.info", "lan.enable", "lan.disable", "controller.list", "controller.revoke", "remote.open", "remote.close", "remote.pipe.open", "relay.info", "push.register", "push.unregister", "direct.info", "direct.offer", "node.join", "node.leave", "node.accountJoin"]);
+/** The requests a relayed client still gets answered by the node it is on: its own files, its own file manager, its own phones (and their relay and push rows), its own viewer and the ports it opens, its own data channel, its own membership. */
+const LOCAL_ONLY = new Set(["view.stage", "session.reveal", "transfer.reveal", "pair.start", "browser.invite", "lan.info", "lan.enable", "lan.disable", "controller.list", "controller.revoke", "remote.open", "remote.close", "remote.pipe.open", "port.open", "port.close", "relay.info", "push.register", "push.unregister", "direct.info", "direct.offer", "node.join", "node.leave", "node.accountJoin"]);
 
 /** The signals a relayed client sends this node itself: a data channel's candidates end here, where its helper is, and a stream's pipes where they were opened. */
 const LOCAL_SIGNALS = new Set(["direct.candidate", "remote.pipe.data", "remote.pipe.ack", "remote.pipe.close"]);

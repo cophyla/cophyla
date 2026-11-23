@@ -48,7 +48,8 @@
 //
 // A stream's pipes are the app's too, never the view's: `pipeOpen` asks the node with the
 // core's own requests, `pipeSignal` sends a pipe's bytes, window and end on the connection
-// that carries the link, and the node's `remote.pipe.*` go to `onPipe` and nowhere else.
+// that carries the link, and the node's `remote.pipe.*` go to `onPipe` and nowhere else. A
+// port's page rides the same pipes, opened toward the share the node answered for it.
 
 import type { AudioCodec, Controller, PairedLan, RelayAccess } from "@cophyla/protocol";
 import { EVENT_FRAME, EVENT_STATE } from "@cophyla/viewhost";
@@ -926,11 +927,11 @@ export class LinkCore implements TauriIo {
 
   // --- a stream's pipes, the app's own ----------------------------------------------------------
 
-  /** Opens a pipe toward `node`'s stream proxy on the connection that carries the link. */
-  pipeOpen(node: string): Promise<{ pipe: string; window: number }> {
+  /** Opens a pipe toward `node`'s stream proxy on the connection that carries the link, or with `share` to the port `port.open` opened for this phone. */
+  pipeOpen(node: string, share?: string): Promise<{ pipe: string; window: number }> {
     const active = this.active;
     if (!active || this.state.state !== "connected") return Promise.reject(new CoreError("unavailable", "not connected to the node"));
-    return this.coreRequest(active, "remote.pipe.open", { node }, PIPE_OPEN_MS) as Promise<{ pipe: string; window: number }>;
+    return this.coreRequest(active, "remote.pipe.open", { node, ...(share !== undefined ? { share } : {}) }, PIPE_OPEN_MS) as Promise<{ pipe: string; window: number }>;
   }
 
   /** A pipe's bytes, window or end, on the connection that carries the link. */

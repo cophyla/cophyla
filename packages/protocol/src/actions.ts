@@ -119,6 +119,15 @@ export const actions = {
   // A node asking for a stream page of this desktop for a viewer of its own (the node link's).
   "remote.ticket": { risk: "exec" },
   "remote.screenshot": { risk: "exec" },
+  // A machine's localhost opened on another of the user's devices: what listens there is a read;
+  // opening one reaches whatever serves on it, as a program on that machine could; closing ends it.
+  "ports.list": { risk: "read" },
+  "port.open": { risk: "exec" },
+  "port.close": { risk: "write" },
+  // The node link's: a node asking this machine to share a port of its own with a device of the
+  // user's (asked of no one by default: the user opened it from that device), and ending it.
+  "port.share": { risk: "exec" },
+  "port.unshare": { risk: "write" },
   "chat.send": { risk: "write" },
   "chat.load": { risk: "read" },
   "chat.history": { risk: "read" },
@@ -233,6 +242,10 @@ export const actions = {
   "tracker.set": { risk: "write" },
   // Notes: the app's requests (`note.*`, `notes.*`), and an agent leaving the user one (`notify_user`, `agent.notify`).
   "note.list": { risk: "read" },
+  "webtab.list": { risk: "read" },
+  "webtab.open": { risk: "write" },
+  "webtab.close": { risk: "write" },
+  "webtab.report": { risk: "read" },
   "note.mark": { risk: "write" },
   "note.dismiss": { risk: "write" },
   "notes.get": { risk: "read" },

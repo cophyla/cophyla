@@ -245,6 +245,15 @@
       "results": [{ "text": "Sent app.zip (2.0 MB) to web-review on Laptop: C:\\Users\\me\\Downloads\\app.zip." }, { "text": "Not sent: your user did not allow it.", "isError": true }]
     },
     "remote.close": { "params": [{ "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "stream": "stream_0123456789abcdef", "viewer": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV:client_01ARZ3NDEKTSV4RRFFQ69G5FAZ" }], "results": [{}] },
+    "port.share": {
+      "params": [{ "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "port": 3000, "viewer": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "name": "Laptop" }, { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "port": 8443, "viewer": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV" }],
+      "results": [{ "share": "prt_01ARZ3NDEKTSV4RRFFQ69G5FP1", "expiresAt": 1758283200000 }, { "share": "prt_01ARZ3NDEKTSV4RRFFQ69G5FP2", "expiresAt": 1758283200000, "tls": true }]
+    },
+    "port.unshare": { "params": [{ "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "share": "prt_01ARZ3NDEKTSV4RRFFQ69G5FP1" }, { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "share": "prt_01ARZ3NDEKTSV4RRFFQ69G5FP1", "viewer": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV" }], "results": [{ "connections": 14, "bytes": 2183302 }, { "connections": 0, "bytes": 0 }] },
+    "port.pipe.open": {
+      "params": [{ "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "pipe": "n4", "share": "prt_01ARZ3NDEKTSV4RRFFQ69G5FP1" }, { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "pipe": "n5", "share": "prt_01ARZ3NDEKTSV4RRFFQ69G5FP1", "viewer": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV" }],
+      "results": [{ "window": 262144 }]
+    },
     "replicate.snapshot": {
       "params": [{}],
       "results": [

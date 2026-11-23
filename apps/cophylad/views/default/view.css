@@ -3835,7 +3835,7 @@ button:disabled {
 
 /* The page's buttons, one size: quiet outlines, lit under the pointer; the one thing to do is
    in the cophyla outline, a confirm that cannot be undone filled in rust. */
-.devices-view :is(.node-rename, .node-rename-form button, .node-choose button, .node-grant button, .node-restart button, .remote-head button, .door-switch, .remote-viewing button, .remote-actions button, .remote-viewer-forget, .remote-pin-form button, .remote-invite button, .node-tools button, .phone-tools button, .lan-buttons button, .grant-form button, .invite-buttons button, .invite-pending-cancel, .controller-revoke, .pair-done, .account-card button) {
+.devices-view :is(.node-rename, .node-rename-form button, .node-choose button, .node-grant button, .node-restart button, .remote-head button, .door-switch, .remote-viewing button, .remote-actions button, .remote-viewer-forget, .remote-pin-form button, .remote-invite button, .ports-forward button, .ports-row button, .ports-form button, .node-tools button, .phone-tools button, .lan-buttons button, .grant-form button, .invite-buttons button, .invite-pending-cancel, .controller-revoke, .pair-done, .account-card button) {
   border: 1px solid var(--line-strong);
   border-radius: 6px;
   background: transparent;
@@ -3846,7 +3846,7 @@ button:disabled {
   padding: 4px 11px;
 }
 
-.devices-view :is(.node-rename, .node-rename-form button, .node-choose button, .node-grant button, .node-restart button, .remote-head button, .door-switch, .remote-viewing button, .remote-actions button, .remote-viewer-forget, .remote-pin-form button, .remote-invite button, .node-tools button, .phone-tools button, .lan-buttons button, .grant-form button, .invite-buttons button, .invite-pending-cancel, .controller-revoke, .pair-done, .account-card button):hover:not(:disabled) {
+.devices-view :is(.node-rename, .node-rename-form button, .node-choose button, .node-grant button, .node-restart button, .remote-head button, .door-switch, .remote-viewing button, .remote-actions button, .remote-viewer-forget, .remote-pin-form button, .remote-invite button, .ports-forward button, .ports-row button, .ports-form button, .node-tools button, .phone-tools button, .lan-buttons button, .grant-form button, .invite-buttons button, .invite-pending-cancel, .controller-revoke, .pair-done, .account-card button):hover:not(:disabled) {
   border-color: var(--muted);
   background: var(--raised);
 }
@@ -3855,12 +3855,12 @@ button:disabled {
   opacity: 0.55;
 }
 
-.devices-view button:is(.remote-connect, .remote-beside, .remote-share-on, .remote-pin-submit, .remote-invite-open, .grant-submit, .node-add, .phone-invite, .node-promote-confirm, .node-rename-save, .node-restart-force, .backup-on, .backup-restore, .backup-submit, .account-login) {
+.devices-view button:is(.remote-connect, .remote-beside, .remote-share-on, .remote-pin-submit, .ports-submit,.remote-invite-open, .grant-submit, .node-add, .phone-invite, .node-promote-confirm, .node-rename-save, .node-restart-force, .backup-on, .backup-restore, .backup-submit, .account-login) {
   border-color: var(--cophyla);
   color: var(--cophyla-ink);
 }
 
-.devices-view button:is(.remote-connect, .remote-beside, .remote-share-on, .remote-pin-submit, .remote-invite-open, .grant-submit, .node-add, .phone-invite, .node-promote-confirm, .node-rename-save, .node-restart-force, .backup-on, .backup-restore, .backup-submit, .account-login):hover:not(:disabled) {
+.devices-view button:is(.remote-connect, .remote-beside, .remote-share-on, .remote-pin-submit, .ports-submit,.remote-invite-open, .grant-submit, .node-add, .phone-invite, .node-promote-confirm, .node-rename-save, .node-restart-force, .backup-on, .backup-restore, .backup-submit, .account-login):hover:not(:disabled) {
   border-color: var(--cophyla-ink);
   background: var(--cophyla-wash);
 }
@@ -3876,7 +3876,7 @@ button:disabled {
 }
 
 /* Forgetting and removing are quiet until pointed at; their confirm is filled. */
-.devices-view button:is(.remote-viewer-forget, .controller-revoke, .node-remove, .node-leave, .remote-share-off):hover:not(:disabled) {
+.devices-view button:is(.remote-viewer-forget, .controller-revoke, .node-remove, .node-leave, .remote-share-off, .ports-close):hover:not(:disabled) {
   border-color: var(--rust);
   background: rgba(239, 114, 89, 0.1);
   color: var(--rust);
@@ -4565,6 +4565,7 @@ button:disabled {
 }
 
 /* Connect, beside Kill: a code for another person's agent, or theirs used here. */
+.session-web,
 .session-connect-start {
   display: inline-flex;
   align-items: center;
@@ -4579,6 +4580,8 @@ button:disabled {
   cursor: pointer;
 }
 
+.session-web:hover:not(:disabled),
+.session-web[aria-pressed="true"],
 .session-connect-start:hover:not(:disabled),
 .session-connect-start[aria-expanded="true"] {
   border-color: var(--cophyla);
@@ -5741,6 +5744,177 @@ button:disabled {
 
 .node-agents[data-accept="1"] .agents-note {
   color: var(--amber);
+}
+
+/* a machine's web pages: what is open of its localhost here, what listens there, a port typed */
+
+.node-ports {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 6px;
+  padding-top: 5px;
+  border-top: 1px solid var(--line);
+}
+
+.node-card .node-ports {
+  gap: 8px;
+  margin: 14px 0 0 var(--card-indent);
+  padding-top: 12px;
+}
+
+.ports-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  min-width: 0;
+}
+
+.ports-label {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.ports-words {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.ports-words[data-error="1"] {
+  color: var(--rust);
+}
+
+.ports-refresh {
+  margin-left: auto;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font-size: 11.5px;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.ports-refresh:hover:not(:disabled) {
+  color: var(--ink);
+}
+
+/* what is open and what listens: a row each, in one box, hairlines between */
+.ports-open,
+.ports-list {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--paper);
+  overflow: hidden;
+}
+
+.ports-open:empty,
+.ports-list:empty {
+  display: none;
+}
+
+.ports-forward,
+.ports-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 6px 8px 6px 10px;
+  border-top: 1px solid var(--line);
+}
+
+.ports-forward:first-child,
+.ports-row:first-child {
+  border-top: 0;
+}
+
+.ports-forward-main {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.ports-address,
+.ports-number {
+  font-family: var(--mono);
+  font-size: 12.5px;
+}
+
+.ports-address {
+  color: var(--moss);
+}
+
+.ports-forward-words,
+.ports-program {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ports-number {
+  flex: 0 0 52px;
+}
+
+.ports-program {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.ports-row[data-open="1"] .ports-number {
+  color: var(--moss);
+}
+
+.ports-moved {
+  color: var(--amber);
+  font-size: 11.5px;
+}
+
+.devices-view :is(.ports-forward, .ports-row) button {
+  flex: 0 0 auto;
+  padding: 2px 9px;
+  font-size: 12px;
+}
+
+.ports-note {
+  margin: 0;
+  color: var(--faint);
+  font-size: 11.5px;
+}
+
+.ports-form {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.ports-form input {
+  width: 72px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--paper);
+  color: var(--ink);
+  font: inherit;
+  font-family: var(--mono);
+  font-size: 12px;
+  padding: 2px 6px;
+}
+
+.ports-error {
+  margin: 0;
+  color: var(--rust);
+  font-size: 12px;
 }
 
 /* the node's desktop: its host, who views it, and the ways in */
@@ -13057,4 +13231,138 @@ button:disabled {
   .listen-note:not([hidden]) + .listen {
     margin-left: auto;
   }
+}
+
+/* A session's web tabs beside the pane, or over it: a strip of tabs, the bar (back, forward,
+   reload, the address, DevTools), and a slot the host lays the tab's page over, which says
+   itself what it waits on until then. */
+.web-view-mark {
+  --glyph: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23000' stroke-width='1.2'%3E%3Ccircle cx='8' cy='8' r='6.5'/%3E%3Cpath d='M1.5 8h13M8 1.5c2 2 2.8 4.2 2.8 6.5S10 12.5 8 14.5M8 1.5C6 3.5 5.2 5.7 5.2 8S6 12.5 8 14.5'/%3E%3C/svg%3E");
+}
+
+.web-view-strip {
+  display: flex;
+  flex: 1 1 auto;
+  gap: 2px;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.web-view-tab {
+  display: flex;
+  flex: 0 1 180px;
+  align-items: center;
+  gap: 2px;
+  min-width: 64px;
+  padding: 2px 2px 2px 8px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.web-view-tab:hover {
+  color: var(--ink);
+}
+
+.web-view-tab[aria-selected="true"] {
+  border-color: var(--line);
+  background: var(--panel, transparent);
+  color: var(--ink);
+}
+
+.web-view-tab-label {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.web-view-tab-close {
+  flex: 0 0 auto;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  padding: 0 4px;
+  cursor: pointer;
+  opacity: 0.6;
+}
+
+.web-view-tab-close:hover {
+  opacity: 1;
+}
+
+.web-view-add {
+  --glyph: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23000' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M8 3v10M3 8h10'/%3E%3C/svg%3E");
+}
+
+.web-view-back {
+  --glyph: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23000' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M10 3L5 8l5 5'/%3E%3C/svg%3E");
+}
+
+.web-view-forward {
+  --glyph: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23000' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 3l5 5-5 5'/%3E%3C/svg%3E");
+}
+
+.web-view-reload {
+  --glyph: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23000' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M13 8a5 5 0 1 1-1.5-3.6M13 2.5v3h-3'/%3E%3C/svg%3E");
+}
+
+.web-view-devtools {
+  --glyph: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23000' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5.5 4.5L2 8l3.5 3.5M10.5 4.5L14 8l-3.5 3.5'/%3E%3C/svg%3E");
+}
+
+.web-view-bar {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 4px;
+  margin: 0;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--line);
+}
+
+.web-view-reload[data-loading="1"] {
+  animation: web-view-spin 1s linear infinite;
+}
+
+@keyframes web-view-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.web-view-address {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 3px 8px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: 12.5px;
+}
+
+.web-view-address:focus {
+  border-color: var(--line-strong);
+  outline: none;
+}
+
+.web-view-slot {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  justify-content: center;
+  min-height: 0;
+}
+
+.web-view-note {
+  margin: 0;
+  padding: 12px 16px;
+  color: var(--muted);
+  font-size: 12.5px;
 }

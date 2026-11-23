@@ -8,6 +8,9 @@
 // `host.open` and where the link runs; `Streams` keeps a stream's lifetime: the app's
 // microphone off while it shows, and the node told when it closes; `PipeBridge` carries a
 // link stream's connections, each a pipe (`remote.pipe.*`) between the plugin and the link.
+// A port of one of the user's machines (`port.open`'s `share`) is planned here too and shown
+// by the same plugin in a page dialog of its own (ports.ts), its connections carried by a
+// `PipeBridge` of its own, as pipes to that share.
 
 import { PIN_MISMATCH, PIN_MISMATCH_MESSAGE } from "./native-io.ts";
 import type { Credential } from "../pairing.ts";
@@ -23,7 +26,19 @@ export type OpenPlan =
   | { kind: "window"; url: string }
   /** A link for another app (an `art:` invite). */
   | { kind: "app"; url: string }
+  /** A port of `node`'s the node opened for this phone (`port.open`): its page in the port dialog, its connections pipes to `share`. */
+  | PortPlan
   | { kind: "refuse"; reason: string };
+
+export interface PortPlan {
+  kind: "port";
+  id: string;
+  node: string;
+  port: number;
+  share: string;
+  /** The machine's name, for the dialog's bar. */
+  name: string;
+}
 
 export interface PlanContext {
   /** Where the link runs now. */
@@ -40,9 +55,28 @@ export const AWAY_MESSAGE = "a desktop opens in the app on the node's Wi-Fi, or 
 const STREAM_PATH = /^\/remote\/[A-Za-z0-9._~!$&'()*+,;=:@%/?-]*$/;
 const PATH_MAX = 2048;
 
-/** What `host.open` does with what the view handed it: a stream in the dialog, a page or an app outside, or why not. */
+/** A port's id and its share: `prt_` and a ULID. */
+const PORT_ID = /^prt_[0-7][0-9A-HJKMNP-TV-Z]{25}$/;
+/** A node's id, as the protocol spells one. */
+const NODE_ID = /^node_[0-7][0-9A-HJKMNP-TV-Z]{25}$/;
+const PORT_NAME_MAX = 100;
+const PORT_REFUSED = "that page cannot be opened";
+
+/** What `host.open {port}` hands the port dialog, or why not: the ids as the node mints them, a real port, a short name. */
+function planPort(raw: unknown, ctx: PlanContext): OpenPlan {
+  const p = (raw ?? {}) as { id?: unknown; node?: unknown; port?: unknown; share?: unknown; name?: unknown };
+  if (typeof p.id !== "string" || !PORT_ID.test(p.id) || typeof p.share !== "string" || !PORT_ID.test(p.share)) return { kind: "refuse", reason: PORT_REFUSED };
+  if (typeof p.node !== "string" || !NODE_ID.test(p.node)) return { kind: "refuse", reason: PORT_REFUSED };
+  if (typeof p.port !== "number" || !Number.isInteger(p.port) || p.port < 1 || p.port > 65535) return { kind: "refuse", reason: PORT_REFUSED };
+  if (p.name !== undefined && (typeof p.name !== "string" || p.name.length > PORT_NAME_MAX)) return { kind: "refuse", reason: PORT_REFUSED };
+  if (!ctx.canForward) return { kind: "refuse", reason: "this app cannot open another machine's pages" };
+  return { kind: "port", id: p.id, node: p.node, port: p.port, share: p.share, name: typeof p.name === "string" ? p.name.trim() : "" };
+}
+
+/** What `host.open` does with what the view handed it: a stream in the dialog, a port's page in its own, a page or an app outside, or why not. */
 export function planOpen(params: unknown, ctx: PlanContext): OpenPlan {
-  const p = (params ?? {}) as { url?: unknown; path?: unknown; transport?: unknown; node?: unknown; stream?: unknown };
+  const p = (params ?? {}) as { url?: unknown; path?: unknown; transport?: unknown; node?: unknown; stream?: unknown; port?: unknown };
+  if (p.port !== undefined) return planPort(p.port, ctx);
   const stream = typeof p.stream === "string" && p.stream.length > 0 && p.stream.length <= 64 ? { stream: p.stream } : {};
   const path = typeof p.path === "string" ? p.path : typeof p.url === "string" ? streamPathOf(p.url, ctx.origin) : undefined;
   if (path === undefined) {
@@ -95,15 +129,31 @@ export interface StreamClosed {
   reason?: string;
 }
 
+/** A port's page closed: `closed` (the user), `replaced` (another opened), or what failed. */
+export interface PortClosed {
+  id: string;
+  reason?: string;
+}
+
 type Listener = Promise<{ remove(): Promise<void> }>;
 
-/** What the Kotlin plugin exposes. One stream shows at a time; `open` resolves once the dialog is up. */
+/**
+ * What the Kotlin plugin exposes. One stream shows at a time, and one port's page; `open` and
+ * `openPort` resolve once the dialog is up, `openPort` with the port it listens on here. A
+ * stream's connections and a port's never share an id (`pipe` and `portPipe` say whose a new
+ * one is), so the pipe calls and events below serve both.
+ */
 export interface CophylaStreamPlugin {
   open(options: { stream: string; path: string } & ({ host: string; port: number; pin: string } | { link: true })): Promise<void>;
   close(options: { stream: string }): Promise<void>;
+  openPort(options: { id: string; node: string; share: string; port: number; name: string }): Promise<{ local: number }>;
+  closePort(options: { id: string }): Promise<void>;
   addListener(event: "closed", fn: (e: StreamClosed) => void): Listener;
+  addListener(event: "portClosed", fn: (e: PortClosed) => void): Listener;
   /** A connection of a link stream wants a pipe. */
   addListener(event: "pipe", fn: (e: { stream: string; conn: string }) => void): Listener;
+  /** A connection of a port's page wants a pipe. */
+  addListener(event: "portPipe", fn: (e: { port: string; conn: string }) => void): Listener;
   /** Bytes the page sent on a connection, within its window. */
   addListener(event: "pipeData", fn: (e: { conn: string; data: string }) => void): Listener;
   /** Bytes the page took from a connection. */
@@ -118,33 +168,44 @@ export interface CophylaStreamPlugin {
   pipeClose(options: { conn: string }): Promise<void>;
 }
 
-/** What the pipes need of the link (the core's own pipe calls): an open, a signal, and the node's pipe frames. */
+/** What the pipes need of the link (the core's own pipe calls): an open, toward a share when one is named, a signal, and the node's pipe frames. */
 export interface PipeLink {
-  open(node: string): Promise<{ pipe: string; window: number }>;
+  open(node: string, share?: string): Promise<{ pipe: string; window: number }>;
   signal(method: "remote.pipe.data" | "remote.pipe.ack" | "remote.pipe.close", params: unknown): void;
   onPipe(fn: (method: string, params: unknown) => void): () => void;
+}
+
+/** Where a bridge's pipes go: the node whose desktop shows, or, for a port's page, the share `port.open` answered (`key` its id, which the plugin's `portPipe` names). */
+interface PipeTarget {
+  node: string;
+  share?: string;
+  key?: string;
 }
 
 /**
  * A link stream's connections, each a pipe to the node whose desktop it shows: opened on the
  * plugin's `pipe`, the page's bytes signalled up as they come (the plugin keeps to the
  * window), the node's written to the page and acknowledged once the page took them, an end
- * on either side closing the other.
+ * on either side closing the other. A port's page has a bridge of its own (`kind: port`): its
+ * connections come as `portPipe`, for the page it shows alone, and its pipes go to the share.
+ * Each bridge passes over the connections and pipes that are not its own.
  */
 export class PipeBridge {
   private plugin: CophylaStreamPlugin;
   private link: PipeLink;
   private log?: (message: string) => void;
-  private node?: string;
+  private kind: "stream" | "port";
+  private target?: PipeTarget;
   /** Pipes by connection, and back. */
   private pipes = new Map<string, string>();
   private conns = new Map<string, string>();
   private listening?: Promise<unknown>;
 
-  constructor(deps: { plugin: CophylaStreamPlugin; link: PipeLink; log?: (message: string) => void }) {
+  constructor(deps: { plugin: CophylaStreamPlugin; link: PipeLink; log?: (message: string) => void; kind?: "stream" | "port" }) {
     this.plugin = deps.plugin;
     this.link = deps.link;
     if (deps.log) this.log = deps.log;
+    this.kind = deps.kind ?? "stream";
     this.link.onPipe((method, params) => this.fromNode(method, params));
   }
 
@@ -153,12 +214,23 @@ export class PipeBridge {
     return this.pipes.size;
   }
 
-  /** A link stream to `node` shows: its connections get pipes there. */
-  async start(node: string): Promise<void> {
+  /** What closing a pipe says when the page it belongs to went. */
+  private get gone(): string {
+    return this.kind === "port" ? "the page closed" : "the stream closed";
+  }
+
+  /** A link stream to `node` shows, or a port's page (`share`, `key`): its connections get pipes there. */
+  async start(node: string, opts: { share?: string; key?: string } = {}): Promise<void> {
     this.stop();
-    this.node = node;
+    this.target = { node, ...(opts.share !== undefined ? { share: opts.share } : {}), ...(opts.key !== undefined ? { key: opts.key } : {}) };
     this.listening ??= Promise.all([
-      this.plugin.addListener("pipe", (e) => void this.connection(e.conn)),
+      this.kind === "port"
+        ? this.plugin.addListener("portPipe", (e) => {
+            // a connection of a page that closed meanwhile gets no pipe
+            if (e.port !== this.target?.key) void this.plugin.pipeFailed({ conn: e.conn }).catch(() => undefined);
+            else void this.connection(e.conn);
+          })
+        : this.plugin.addListener("pipe", (e) => void this.connection(e.conn)),
       this.plugin.addListener("pipeData", (e) => this.toNode(e.conn, "remote.pipe.data", { data: e.data })),
       this.plugin.addListener("written", (e) => this.toNode(e.conn, "remote.pipe.ack", { bytes: e.bytes })),
       this.plugin.addListener("pipeEnd", (e) => {
@@ -169,31 +241,31 @@ export class PipeBridge {
     await this.listening;
   }
 
-  /** The stream closed: every pipe it had closes on the node too. */
+  /** The stream or the page closed: every pipe it had closes on the node too. */
   stop(): void {
-    for (const pipe of this.pipes.values()) this.link.signal("remote.pipe.close", { pipe, reason: "the stream closed" });
+    for (const pipe of this.pipes.values()) this.link.signal("remote.pipe.close", { pipe, reason: this.gone });
     this.pipes.clear();
     this.conns.clear();
-    this.node = undefined;
+    this.target = undefined;
   }
 
   private async connection(conn: string): Promise<void> {
-    const node = this.node;
-    if (node === undefined) {
+    const target = this.target;
+    if (target === undefined) {
       void this.plugin.pipeFailed({ conn }).catch(() => undefined);
       return;
     }
     let opened: { pipe: string; window: number };
     try {
-      opened = await this.link.open(node);
+      opened = target.share !== undefined ? await this.link.open(target.node, target.share) : await this.link.open(target.node);
     } catch (e) {
-      this.log?.(`no pipe for the stream: ${e instanceof Error ? e.message : String(e)}`);
+      this.log?.(`no pipe for the ${this.kind === "port" ? "page" : "stream"}: ${e instanceof Error ? e.message : String(e)}`);
       void this.plugin.pipeFailed({ conn }).catch(() => undefined);
       return;
     }
-    // the stream closed, or another opened, meanwhile
-    if (this.node !== node) {
-      this.link.signal("remote.pipe.close", { pipe: opened.pipe, reason: "the stream closed" });
+    // the stream or the page closed, or another opened, meanwhile
+    if (this.target !== target) {
+      this.link.signal("remote.pipe.close", { pipe: opened.pipe, reason: this.gone });
       void this.plugin.pipeFailed({ conn }).catch(() => undefined);
       return;
     }

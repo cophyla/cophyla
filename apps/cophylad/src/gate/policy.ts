@@ -4,7 +4,8 @@
 // config rule; a built-in rule (what the brain may do without asking: speak, keep its own
 // books, call the model the user configured, start a session of its own and message the
 // ones it started; let the user's agent sessions message each other, asking about one that
-// reaches a session running without prompts); the config default for the principal kind and risk class, where an ask
+// reaches a session running without prompts; let one of the user's machines share a port of
+// this one with their device); the config default for the principal kind and risk class, where an ask
 // is an allow for this node's own primary when the owner let it work here unasked at the
 // join (`trusted`).
 
@@ -113,6 +114,11 @@ export const BUILTIN_RULES: Readonly<Record<string, Decision>> = {
   "harness:peer.file.send": "ask",
   "harness:group.share": "ask",
   "harness:group.file.get": "allow",
+  // One of the user's machines asking this one to share a port of its own loopback with a
+  // device of the user's, and ending it: the user opened it from that device, and no one may be
+  // here to answer. Audited at both ends; a rule can still ask or deny (`node:port.share`).
+  "node:port.share": "allow",
+  "node:port.unshare": "allow",
 };
 
 /**

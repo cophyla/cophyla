@@ -91,6 +91,7 @@ pub async fn stream_open<R: Runtime>(app: AppHandle<R>, url: String, stream: Str
         .inner_size(1280.0, 800.0)
         .min_inner_size(480.0, 320.0)
         .incognito(true)
+        .devtools(crate::DEVTOOLS)
         .on_navigation(same_origin(&page, "stream window"));
     #[cfg(windows)]
     let builder = builder.additional_browser_args(crate::BROWSER_ARGS);
@@ -129,6 +130,7 @@ pub async fn stream_embed<R: Runtime>(app: AppHandle<R>, url: String, stream: St
     let builder = WebviewBuilder::new(&label, WebviewUrl::External(first_page(&page)?))
         .incognito(true)
         .focused(false)
+        .devtools(crate::DEVTOOLS)
         .on_navigation(same_origin(&page, "stream beside the view"));
     #[cfg(windows)]
     let builder = builder.additional_browser_args(crate::BROWSER_ARGS);
@@ -149,8 +151,8 @@ pub async fn stream_embed<R: Runtime>(app: AppHandle<R>, url: String, stream: St
 }
 
 /// The rectangle a stream's page beside the view takes, in the window's logical pixels, once it
-/// is one: finite, its corner anywhere, at least a pixel each way.
-fn placement(x: f64, y: f64, width: f64, height: f64) -> Result<Rect, String> {
+/// is one: finite, its corner anywhere, at least a pixel each way. A web tab's too (webtab.rs).
+pub(crate) fn placement(x: f64, y: f64, width: f64, height: f64) -> Result<Rect, String> {
     if ![x, y, width, height].iter().all(|v| v.is_finite()) || width < 1.0 || height < 1.0 {
         return Err("invalid: not a rectangle".into());
     }

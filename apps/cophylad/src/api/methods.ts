@@ -7,7 +7,8 @@
 // `session.files` and `session.git`; the brain's listeners as the settings show them; the
 // speaker button's `voice.hush` and the `voice.presence` a client says where the user is with;
 // `session.mode`; `brain.context`, what the chat's own session is told and what the platform's own calls in its conversation have cost, behind `[brain] show_context`;
-// the chat's own session as the settings show and set it (`assistant.state`, `assistant.configure`, `assistant.restart`).
+// the chat's own session as the settings show and set it (`assistant.state`, `assistant.configure`, `assistant.restart`);
+// a machine's localhost opened on another of the user's devices (`ports.list`, `port.open`, `port.close`).
 
 import { AssistantPreview, RpcError, sessionModeRisk, VOICE_PREVIEW_MAX } from "@cophyla/protocol";
 import { checkScope } from "../sessions/scope.ts";
@@ -39,6 +40,7 @@ import { folderSummary } from "../sessions/tether/folders.ts";
 import type { TerminalViews } from "../nodes/terminals.ts";
 import type { Remote } from "../remote/index.ts";
 import type { PipeHub } from "../remote/pipes.ts";
+import type { Ports } from "../remote/ports.ts";
 import type { Tasks } from "../tasks/index.ts";
 import type { Update } from "../update/index.ts";
 import type { Views } from "../views/index.ts";
@@ -700,6 +702,8 @@ export interface RemoteMethodDeps {
   pipes?: PipeHub;
   /** This machine's sign-in door, where it can have one (Windows). */
   door?: DoorSwitch;
+  /** The ports the user's devices open, for the phone's pipes to one it opened. */
+  ports?: Ports;
 }
 
 /** A machine's sign-in door as the app switches it: on (its service installed the first time), off, or off and removed. */
@@ -820,17 +824,49 @@ export function remoteMethods(deps: RemoteMethodDeps): MethodTable {
       },
     },
     "remote.pipe.open": {
-      target: (p) => p.node,
+      target: (p) => p.share ?? p.node,
       handler: async (p, ctx) => {
         const pipes = deps.pipes;
         if (!pipes) throw new RpcError("unsupported", "this node carries no pipes");
+        // a pipe to a port this client opened, and no other's
+        const port = p.share !== undefined ? deps.ports?.pipeTo(ctx.client.id, p.share) : undefined;
+        if (p.share !== undefined && !port) throw new RpcError("unsupported", "this node opens no ports");
         try {
-          return await pipes.openForClient(ctx.client.id, p.node);
+          return await (port ? pipes.openForClient(ctx.client.id, port.node, port.target) : pipes.openForClient(ctx.client.id, p.node));
         } catch (e) {
           if (e instanceof RpcError) throw e;
           throw new RpcError("unavailable", e instanceof Error ? e.message : String(e));
         }
       },
+    },
+  };
+}
+
+export interface PortMethodDeps {
+  ports: Ports;
+}
+
+/**
+ * A machine's localhost opened on another of the user's devices. `ports.list` is answered by
+ * the machine it names (forwarded there); `port.open` and `port.close` by the node this socket
+ * is on, which holds the forward: a forwarder for the desktop app on this machine, a share the
+ * phone app's own forwarder opens pipes to (`remote.pipe.open {share}`), or nothing between on
+ * the machine itself. The audit row keeps the machine and the port, never what the page carries.
+ */
+export function portMethods(deps: PortMethodDeps): MethodTable {
+  return {
+    "ports.list": {
+      target: (p) => p.node,
+      redactResult: (r) => ({ ports: r.ports.length }),
+      handler: () => deps.ports.list(),
+    },
+    "port.open": {
+      target: (p) => `${p.node}:${p.port}`,
+      handler: (p, ctx) => deps.ports.open(ctx.client, { listener: ctx.listener, ...(ctx.client.path ? { path: ctx.client.path } : {}), ...(ctx.forward ? { forward: true } : {}), ...(ctx.browser ? { browser: true } : {}) }, p.node, p.port),
+    },
+    "port.close": {
+      target: (p) => p.id,
+      handler: (p, ctx) => deps.ports.close(ctx.client.id, p.id),
     },
   };
 }

@@ -544,6 +544,12 @@ describe("a stream's pipes", () => {
     expect(ask["params"]).toEqual({ node: "node_b" });
     d.deliver({ jsonrpc: "2.0", id: ask["id"], result: { pipe: "p_1", window: 262_144 } });
     expect(await opening).toEqual({ pipe: "p_1", window: 262_144 });
+    // a port's page names its share
+    const toPort = core.pipeOpen("node_b", "prt_01ARZ3NDEKTSV4RRFFQ69G5FP1");
+    const portAsk = d.last((f) => f["method"] === "remote.pipe.open")!;
+    expect(portAsk["params"]).toEqual({ node: "node_b", share: "prt_01ARZ3NDEKTSV4RRFFQ69G5FP1" });
+    d.deliver({ jsonrpc: "2.0", id: portAsk["id"], result: { pipe: "p_2", window: 262_144 } });
+    expect(await toPort).toEqual({ pipe: "p_2", window: 262_144 });
     core.pipeSignal("remote.pipe.data", { pipe: "p_1", data: "R0VU" });
     expect(d.sent.at(-1)).toEqual({ jsonrpc: "2.0", method: "remote.pipe.data", params: { pipe: "p_1", data: "R0VU" } });
     d.deliver({ jsonrpc: "2.0", method: "remote.pipe.data", params: { pipe: "p_1", data: "SFRUUA==" } });

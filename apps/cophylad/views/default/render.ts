@@ -46,7 +46,8 @@
 // markdown by building its elements (markdown.ts); what the user typed shows as typed.
 // Devices lies over the panes, from Status's foot or a machine's or phone's line there: a card
 // per machine (its name the user sets, what it is, its facts, its readings and processes, its
-// desktop with who can view it a device a line, and Make primary, Restart and Remove or Leave,
+// desktop with who can view it a device a line, its localhost's web pages opened here and what
+// listens there (portview.ts), and Make primary, Restart and Remove or Leave,
 // each asked in place), a row per phone with Forget, and the account. Under the machines and
 // the phones, the grants: Add a computer and Add a phone mint an invite and show it (its text
 // to copy, its QR code, how long it holds) until Done or until it is used; the invites still
@@ -97,9 +98,13 @@ import type { ListenUi } from "./listenctl.ts";
 import { turnText } from "./listenmodel.ts";
 import { createTrackStrip, createTrackToggle, updateTrackStrip, updateTrackToggle } from "./trackview.ts";
 import type { TrackUi } from "./trackview.ts";
+import { createPorts, updatePorts } from "./portview.ts";
+import type { PortsUi } from "./portmodel.ts";
 import type { PaneMode } from "./model.ts";
 import { canLead } from "./model.ts";
 import type { StatusMachine, StatusMeter, StatusPhone, ViewerRow } from "./model.ts";
+import { sessionTabs, webShown } from "./webtabmodel.ts";
+import type { WebTabsUi } from "./webtabmodel.ts";
 
 /** The folds the user opened, in `expanded`: a machine's processes in Devices. */
 export const processesKey = (node: string): string => `node:${node}/processes`;
@@ -140,6 +145,8 @@ export interface UiState {
   listen: ListenUi;
   /** The notes: whether the bell's list is down, the strips folded, replies on their way. */
   notes: NoteUi;
+  /** Machines' Web pages: what is on its way, and why the last Open did not go (portview.ts). */
+  ports: PortsUi;
   /**
    * The view the user last chose, the chat or a terminal: each session's pane and the chat's pane
    * open on it until they choose again (`tabChoice`, `chatMode`). Unset until they first choose:
@@ -227,6 +234,9 @@ export interface UiState {
   /** Where that desktop sits on a wide window, and its share of the width beside the pane: kept on the device. */
   remoteDock: ViewerDock;
   remoteWidth: number;
+  /** The web tabs beside agents' chats (webtabmodel.ts), and their panel's share of the width. */
+  web: WebTabsUi;
+  webWidth: number;
   /** The user showed or put away the rail; undefined is the width's own: beside the pane on a desk, away on a phone, where it slides in over the pane. */
   rail?: "open" | "closed";
   /** The backup's passphrase form is open, for turning it on (`replace` starting over) or restoring. */
@@ -1046,8 +1056,8 @@ function updateFold(b: HTMLElement, key: string, label: string, open: boolean): 
 /**
  * A machine's card in Devices: its name the user sets, with what it is beside it (this
  * computer, the primary, hands) and Rename; a line of facts; its readings, and its processes
- * folded until the user opens them; its desktop; and at its foot Make primary, Restart and
- * Remove or Leave, each asked in place.
+ * folded until the user opens them; its desktop, and its localhost's web pages opened here
+ * (portview.ts); and at its foot Make primary, Restart and Remove or Leave, each asked in place.
  */
 function createNodeCard(): HTMLElement {
   const card = el("article", "node-card");
@@ -1061,7 +1071,7 @@ function createNodeCard(): HTMLElement {
   head.append(el("span", "dot"), title, actionButton("node-rename", "Rename", "node-rename"));
   const foot = el("footer", "node-foot");
   foot.append(createNodePromote(), createRestart(), createNodeGrant());
-  card.append(head, el("div", "node-bars"), createFold("node-processes"), el("div", "node-sessions"), createRemote(), createAgents(), foot);
+  card.append(head, el("div", "node-bars"), createFold("node-processes"), el("div", "node-sessions"), createRemote(), createPorts(), createAgents(), foot);
   return card;
 }
 
@@ -1230,6 +1240,7 @@ function updateNodeCard(node: HTMLElement, card: NodeCard, state: ViewState, ui:
   setHidden(owners, !open);
   reconcile(owners, open ? card.owners : [], (o) => o.key, createOwner, updateOwner);
   updateRemote(node.querySelector<HTMLElement>(".node-remote")!, selectRemote(state, card.node), state, ui);
+  updatePorts(node.querySelector<HTMLElement>(".node-ports")!, card.node, state, ui);
   updateAgents(node.querySelector<HTMLElement>(".node-agents")!, selectAgents(state, card.node), state, ui);
   const foot = node.querySelector<HTMLElement>(".node-foot")!;
   updateNodePromote(foot.querySelector<HTMLElement>(".node-choose")!, card, state, ui);
@@ -3337,7 +3348,10 @@ function createPane(): HTMLElement {
   // Folded, the terminal's own controls (− scale +, Fit) come onto the line here (`TerminalView.dock`).
   // Lead, before Kill: this session a leader of the user's others, speaking to them as the user.
   // Track: the tracker follows what the user asks this session, its asks in a strip under the header.
-  actions.append(modes, chatScaleControl(), el("span", "session-term-slot"), createTrackToggle(), connect, createLeadControl(), kill);
+  // Web: the session's web tabs beside its pane, or a new one, where the desktop app opens them.
+  const web = actionButton("session-web", "Web", "session-web");
+  web.title = "Show this agent's web tabs beside it, or open one: its Playwright drives them";
+  actions.append(modes, chatScaleControl(), el("span", "session-term-slot"), createTrackToggle(), web, connect, createLeadControl(), kill);
   // The other people's agents this session is joined to, when it is: a press opens its Connect panel.
   const links = actionButton("session-links", "", "session-connect-show");
   // Beside them, what it leads while it leads, and the leaders that speak to it.
@@ -3388,6 +3402,12 @@ function updatePane(node: HTMLElement, card: SessionCard, state: ViewState, ui: 
   if (talk) updateModeCount(messages, state, s.id);
   // Its messages are drawn while they show alone: every session has a pane, one shows.
   if (mode === "messages" && ui.selected === s.id) renderTalkPane(node.querySelector<HTMLElement>(".talk-pane")!, s.id, state, ui);
+  const web = node.querySelector<HTMLButtonElement>(".session-web")!;
+  setHidden(web, !state.hostWebTabs || s.node !== state.node);
+  setData(web, "session", s.id);
+  const webCount = sessionTabs(ui.web, s.id).length;
+  setText(web, webCount > 0 ? `Web ${webCount}` : "Web");
+  web.setAttribute("aria-pressed", webShown(ui.web, s.id) ? "true" : "false");
   updateKill(node.querySelector<HTMLElement>(".session-kill")!, s, state, ui);
   updateSessionFocus(node.querySelector<HTMLElement>(".session-focus")!, s, state, ui);
   updateHeadConnect(node, s, state, ui);

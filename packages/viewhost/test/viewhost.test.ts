@@ -93,6 +93,31 @@ describe("view host", () => {
     expect(heard()).toEqual(["host.state false"]);
   });
 
+  test("a host that opens web tabs says so in the view's host.ready, and one that does not says nothing of them", async () => {
+    const ready = async (webTabs: boolean) => {
+      const posted: { frame: { method?: string; params?: unknown } }[] = [];
+      const loads: (() => void)[] = [];
+      (globalThis as unknown as { window: unknown }).window = { addEventListener: () => {} };
+      (globalThis as unknown as { document: unknown }).document = {
+        createElement: () => ({ setAttribute: () => {}, addEventListener: (type: string, fn: () => void) => (type === "load" ? void loads.push(fn) : undefined), remove: () => {}, contentWindow: { postMessage: (m: unknown) => void posted.push(m as (typeof posted)[number]) }, src: "" }),
+      };
+      const hello = { client: { id: "cli_1", kind: "ui", scopes: ["sessions:read", "sessions:write"], via: "direct", audio: { in: true, out: true }, connectedAt: 1 }, node: "node_1", protocolVersion: 1, platformVersion: "0.1.0" };
+      const conn = {
+        state: { state: "connected", hello },
+        connected: true,
+        request: async (method: string) => (method === "view.list" ? { views: [{ ...view("default", true, "v1"), scopes: ["sessions:read", "sessions:write"] }] } : { node: "node_1", scope: { profilesOff: [], tetherOnly: false, allowedFolders: [], hiddenFolders: [] }, setupAt: 1 }),
+        send: async () => ({}),
+      } as unknown as Connection;
+      const cache = { replay: () => [] } as unknown as SnapshotCache;
+      const host = new ViewHost({ conn, cache, container: { replaceChildren: () => {} } as unknown as HTMLElement, stage: async () => ({ base: "http://view.localhost/", version: "v1" }), host: async () => ({}), ...(webTabs ? { webTabs: true } : {}) });
+      await host.load();
+      loads[0]!();
+      return posted.map((m) => m.frame).find((f) => f.method === "host.ready")?.params as Record<string, unknown>;
+    };
+    expect(await ready(true)).toMatchObject({ webTabs: true });
+    expect(await ready(false)).not.toHaveProperty("webTabs");
+  });
+
   test("a burst of view.changed notices makes one view.list; a changed version reloads the view, the same version does not", async () => {
     const win = { addEventListener: () => {} };
     const doc = {

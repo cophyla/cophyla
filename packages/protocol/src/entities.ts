@@ -27,6 +27,7 @@ import {
   Timestamp,
   TrackedId,
   NoteId,
+  WebTabId,
   TransferId,
   WorkspaceId,
 } from "./ids.ts";
@@ -112,6 +113,8 @@ export const NodeCapabilities = z.object({
   reopenProfile: z.boolean().optional(),
   /** It reopens a session in a mode it is named (`session.reopen` `mode`); an older node would drop the mode, so it is not asked. */
   reopenMode: z.boolean().optional(),
+  /** It opens a port of its own to the user's other devices, and carries one on (`port.*` on the links); an older node refuses them. */
+  ports: z.boolean().optional(),
 });
 export type NodeCapabilities = z.infer<typeof NodeCapabilities>;
 
@@ -1177,6 +1180,29 @@ export const Note = z.object({
   dismissed: z.boolean().optional(),
 });
 export type Note = z.infer<typeof Note>;
+
+/** The longest address a web tab takes. */
+export const WEB_TAB_URL_MAX = 8192;
+
+/**
+ * A web page open in a tab of the desktop app on the machine an agent runs on, beside its chat:
+ * the user's own (`by: "user"`) or opened by the agent's Playwright (`by: "agent"`), which drives
+ * the session's tabs. `url`, `title` and `loading` are what the tab last said; `target` is the
+ * tab's id in the browser's debugging protocol, once the app has opened it. `closed` is the last
+ * word about a tab.
+ */
+export const WebTab = z.object({
+  id: WebTabId,
+  session: SessionId,
+  url: z.string().max(WEB_TAB_URL_MAX),
+  title: z.string().max(500).optional(),
+  loading: z.boolean().optional(),
+  target: z.string().max(100).optional(),
+  by: z.enum(["user", "agent"]),
+  at: Timestamp,
+  closed: z.literal(true).optional(),
+});
+export type WebTab = z.infer<typeof WebTab>;
 
 /** Whether a note is open: waiting for an answer not given yet, or else not read, and not dismissed. */
 export function noteOpen(n: Pick<Note, "needsAnswer" | "read" | "answered" | "dismissed">): boolean {

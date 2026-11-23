@@ -9,7 +9,9 @@
 // or through its own relay peer; a data channel straight to the node when
 // it has direct connections on (`direct.ts`); the remote desktop, shown by the Kotlin
 // stream plugin in a dialog of its own through a forwarder on the phone's loopback (the
-// hello says `forward`, so the node answers the page's path); and the phone's own signals —
+// hello says `forward`, so the node answers the page's path); a port of one of the user's
+// machines, shown by the same plugin in a page dialog through a forwarder of its own whose
+// connections are pipes to the share the node answered (`native/ports.ts`); and the phone's own signals —
 // the app going to the background (the m8 rule: the button up, the microphone off and a stream
 // closed at once; the socket kept two minutes for a quick return, with the node told the
 // phone is away, then closed) and the network changing (the LAN tried again, and not at all
@@ -35,6 +37,7 @@ import type { PeerLike } from "./direct.ts";
 import type { P2pTransport } from "./link-core.ts";
 import { PipeBridge, planOpen, Streams } from "./native/stream.ts";
 import type { CophylaStreamPlugin } from "./native/stream.ts";
+import { Ports } from "./native/ports.ts";
 import { PushBridge } from "./native/push.ts";
 import { stageLocally } from "./native/stage.ts";
 import { pendingSignIn, preferencesStore } from "./native/storage.ts";
@@ -48,6 +51,8 @@ const streamPlugin = registerPlugin<CophylaStreamPlugin>("CophylaStream");
 
 /** The remote desktop on the screen; built once the app is. */
 let streams: Streams | undefined;
+/** A port's page on the screen; built with it. */
+let ports: Ports | undefined;
 
 /** The data channel, where the web view has WebRTC: opened over the link, keyed from the pairing secret. */
 const p2p: P2pTransport | undefined =
@@ -145,6 +150,9 @@ const app = boot({
       case "link":
         await streams!.show(plan);
         return {};
+      case "port":
+        await ports!.show(plan);
+        return {};
       case "window":
       case "app":
         await AppLauncher.openUrl({ url: plan.url });
@@ -159,12 +167,12 @@ const app = boot({
   dismiss: async () => {},
   ready: (a) => {
     // the pipes go on the link core itself: the view's path to the node refuses them
-    const pipes = new PipeBridge({
-      plugin: streamPlugin,
-      link: { open: (node) => a.io.pipeOpen(node), signal: (method, params) => a.io.pipeSignal(method, params), onPipe: (fn) => a.io.onPipe(fn) },
-      log: (m) => console.info(m),
-    });
+    const link = { open: (node: string, share?: string) => a.io.pipeOpen(node, share), signal: a.io.pipeSignal.bind(a.io), onPipe: a.io.onPipe.bind(a.io) };
+    const pipes = new PipeBridge({ plugin: streamPlugin, link, log: (m) => console.info(m) });
     streams = new Streams({ plugin: streamPlugin, request: (method, params) => a.conn.request(method, params), watching: (on) => a.watching(on), pipes, log: (m) => console.info(m) });
+    // a port's page has pipes of its own, to the share its node answered
+    const portPipes = new PipeBridge({ plugin: streamPlugin, link, log: (m) => console.info(m), kind: "port" });
+    ports = new Ports({ plugin: streamPlugin, request: (method, params) => a.conn.request(method, params), pipes: portPipes, log: (m) => console.info(m) });
     const push = new PushBridge({
       request: (method, params) => a.conn.request(method, params),
       connected: () => a.conn.connected,

@@ -4,7 +4,10 @@
 // `remote.pipe.*`; this side reads from the web view only as far as the pipe's window allows,
 // the credit coming back with the node's acks, and writes what comes down in order on one
 // writer per connection, reporting each write so the page acknowledges it to the node. A
-// connection whose pipe does not open in time, or fails to, is closed.
+// connection whose pipe does not open in time, or fails to, is closed. A port's page uses one
+// of its own (PortForwarder): its connections' ids start otherwise (`prefix`), so the two never
+// mix in the plugin, and the first bytes down each connection may be checked before they are
+// written (`firstDown`), which a TLS server's answer fails.
 package com.fareaststudios.cophyla
 
 import java.io.IOException
@@ -14,7 +17,14 @@ import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
 
-class PipeBackend(private val events: Events, private val openTimeoutMs: Long = OPEN_TIMEOUT_MS) : StreamForwarder.Backend {
+class PipeBackend(
+    private val events: Events,
+    private val openTimeoutMs: Long = OPEN_TIMEOUT_MS,
+    /** What every connection's id starts with. */
+    private val prefix: String = "k",
+    /** Whether the first bytes the node sends down a connection may reach the page; false cuts it, ended, unwritten. */
+    private val firstDown: ((ByteArray) -> Boolean)? = null,
+) : StreamForwarder.Backend {
     /** What the page hears, on whatever thread it happens. */
     interface Events {
         /** A connection wants a pipe: answer with `opened` or `failed`. */
@@ -33,6 +43,8 @@ class PipeBackend(private val events: Events, private val openTimeoutMs: Long = 
         var credit = 0L
         @Volatile var opened = false
         @Volatile var closed = false
+        /** Something was written down it already: touched on its writer alone. */
+        var wrote = false
         val writer: ExecutorService = Executors.newSingleThreadExecutor { r -> Thread(r, "cophyla-pipe-write").apply { isDaemon = true } }
     }
 
@@ -43,7 +55,7 @@ class PipeBackend(private val events: Events, private val openTimeoutMs: Long = 
     val count: Int get() = conns.size
 
     override fun serve(conn: Socket, head: ByteArray, done: () -> Unit) {
-        val c = Conn("k${seq.incrementAndGet()}", conn, done)
+        val c = Conn("$prefix${seq.incrementAndGet()}", conn, done)
         conns[c.id] = c
         events.connection(c.id)
         synchronized(c.lock) {
@@ -123,6 +135,13 @@ class PipeBackend(private val events: Events, private val openTimeoutMs: Long = 
         try {
             c.writer.execute {
                 if (c.closed) return@execute
+                if (!c.wrote) {
+                    c.wrote = true
+                    if (firstDown?.invoke(bytes) == false) {
+                        end(c, "the page could not be read")
+                        return@execute
+                    }
+                }
                 try {
                     c.socket.getOutputStream().apply {
                         write(bytes)

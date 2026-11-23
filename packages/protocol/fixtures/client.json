@@ -559,11 +559,25 @@
       ]
     },
     "remote.close": { "params": [{ "stream": "str_9c1e" }], "results": [{}] },
-    "remote.pipe.open": { "params": [{}, { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW" }], "results": [{ "pipe": "p7", "window": 262144 }] },
+    "remote.pipe.open": { "params": [{}, { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW" }, { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "share": "prt_01ARZ3NDEKTSV4RRFFQ69G5FP1" }], "results": [{ "pipe": "p7", "window": 262144 }] },
     "remote.revoke": { "params": [{ "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "viewer": "phone" }], "results": [{}] },
     "remote.enable": { "params": [{}, { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW" }], "results": [{}] },
     "remote.disable": { "params": [{}, { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW" }], "results": [{}] },
     "remote.door": { "params": [{ "on": true }, { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "on": false, "remove": true }], "results": [{}] },
+    "ports.list": {
+      "params": [{}, { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW" }],
+      "results": [{ "ports": [] }, { "ports": [{ "port": 3000, "v4": false, "v6": true, "process": "node.exe" }, { "port": 5432, "v4": true, "v6": true }] }]
+    },
+    "port.open": {
+      "params": [{ "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "port": 3000 }],
+      "results": [
+        { "id": "prt_01ARZ3NDEKTSV4RRFFQ69G5FP1", "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "port": 3000, "local": 3000, "url": "http://localhost:3000/", "route": "lan" },
+        { "id": "prt_01ARZ3NDEKTSV4RRFFQ69G5FP1", "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "port": 3000, "local": 53122, "url": "http://localhost:53122/", "route": "direct" },
+        { "id": "prt_01ARZ3NDEKTSV4RRFFQ69G5FP1", "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "port": 3000, "share": "prt_01ARZ3NDEKTSV4RRFFQ69G5FP1", "route": "lan" },
+        { "id": "prt_01ARZ3NDEKTSV4RRFFQ69G5FP2", "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "port": 3000, "url": "http://localhost:3000/", "route": "here" }
+      ]
+    },
+    "port.close": { "params": [{ "id": "prt_01ARZ3NDEKTSV4RRFFQ69G5FP1" }], "results": [{}] },
     "account.login": { "params": [{}], "results": [{ "verificationUrl": "https://example.com/device", "userCode": "ABCD-EFGH", "expiresAt": 1758197400000 }] },
     "account.logout": { "params": [{}], "results": [{}] },
     "account.apiKey": {
@@ -627,6 +641,10 @@
     "tracker.set": { "params": [{ "on": true }, { "session": { "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "on": false } }, { "session": { "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "on": null } }, { "profile": "prof_01ARZ3NDEKTSV4RRFFQ69G5PF1" }, { "profile": null }], "results": [{"on": true, "sessions": {"sess_01ARZ3NDEKTSV4RRFFQ69G5FB1": false}, "health": {"state": "ok", "at": 1758196700000}}] },
     "note.list": { "params": [{}], "results": [{ "notes": [{"id": "nte_01ARZ3NDEKTSV4RRFFQ69G5NT1", "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "seq": 212, "call": "toolu_01A2B3C4D5E6F7G8H9", "title": "Migration done: 3 tables moved, orders kept on the old schema", "detail": "**orders** has rows the new schema refuses (null `region`). Kept it on the old one; see `migrations/0042.sql`.", "needsAnswer": false, "urgent": false, "at": 1758196700000}, {"id": "nte_01ARZ3NDEKTSV4RRFFQ69G5NT2", "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "seq": 240, "title": "Deploy to staging or wait for the review?", "needsAnswer": true, "urgent": true, "at": 1758196760000}] }, { "notes": [] }] },
     "note.mark": { "params": [{ "id": "nte_01ARZ3NDEKTSV4RRFFQ69G5NT1", "read": true }, { "id": "nte_01ARZ3NDEKTSV4RRFFQ69G5NT2", "answered": false }], "results": [{ "note": {"id": "nte_01ARZ3NDEKTSV4RRFFQ69G5NT1", "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "seq": 212, "call": "toolu_01A2B3C4D5E6F7G8H9", "title": "Migration done: 3 tables moved, orders kept on the old schema", "needsAnswer": false, "urgent": false, "at": 1758196700000, "read": 1758196800000} }, { "note": {"id": "nte_01ARZ3NDEKTSV4RRFFQ69G5NT2", "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "seq": 240, "title": "Deploy to staging or wait for the review?", "needsAnswer": true, "urgent": true, "at": 1758196760000} }] },
+    "webtab.list": { "params": [{}], "results": [{ "tabs": [{"id": "wtb_01ARZ3NDEKTSV4RRFFQ69G5WT1", "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "url": "http://localhost:5173/", "title": "My app", "target": "253DE0B6F572ADB76EDAD16AD13798FA", "by": "agent", "at": 1758196700000}, {"id": "wtb_01ARZ3NDEKTSV4RRFFQ69G5WT2", "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "url": "about:blank", "by": "user", "at": 1758196760000}] }, { "tabs": [] }] },
+    "webtab.open": { "params": [{ "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1" }, { "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "url": "http://localhost:5173/" }], "results": [{ "tab": {"id": "wtb_01ARZ3NDEKTSV4RRFFQ69G5WT2", "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "url": "about:blank", "by": "user", "at": 1758196760000} }] },
+    "webtab.close": { "params": [{ "id": "wtb_01ARZ3NDEKTSV4RRFFQ69G5WT1" }], "results": [{}] },
+    "webtab.report": { "params": [{ "id": "wtb_01ARZ3NDEKTSV4RRFFQ69G5WT1", "target": "253DE0B6F572ADB76EDAD16AD13798FA", "port": 9333, "url": "about:blank" }, { "id": "wtb_01ARZ3NDEKTSV4RRFFQ69G5WT1", "url": "http://localhost:5173/", "title": "My app", "loading": false }, { "id": "wtb_01ARZ3NDEKTSV4RRFFQ69G5WT1", "gone": true, "error": "the page could not open" }], "results": [{}] },
     "note.dismiss": { "params": [{ "ids": ["nte_01ARZ3NDEKTSV4RRFFQ69G5NT1"] }, { "ids": ["nte_01ARZ3NDEKTSV4RRFFQ69G5NT1", "nte_01ARZ3NDEKTSV4RRFFQ69G5NT2"] }], "results": [{}] },
     "notes.get": { "params": [{}], "results": [{ "on": true }, { "on": false }] },
     "notes.set": { "params": [{ "on": false }, { "on": true }], "results": [{ "on": false }] },
@@ -859,6 +877,15 @@
       { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "host": { "kind": "apollo", "status": "ready" }, "viewers": [], "streaming": true, "door": { "state": "serving", "version": "0.22.0" } },
       { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "host": { "kind": "apollo", "status": "ready" }, "viewers": [], "streaming": false, "door": { "state": "unavailable", "reason": "the administrator prompt was declined" } }
     ],
+    "port.state": [
+      { "forwards": [] },
+      {
+        "forwards": [
+          { "id": "prt_01ARZ3NDEKTSV4RRFFQ69G5FP1", "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "port": 3000, "local": 3000, "url": "http://localhost:3000/", "route": "lan", "since": 1758196800000, "connections": 2, "bytes": 482113 },
+          { "id": "prt_01ARZ3NDEKTSV4RRFFQ69G5FP2", "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "port": 5173, "route": "direct", "since": 1758196900000, "connections": 0, "bytes": 0 }
+        ]
+      }
+    ],
     "audit.entry": [
       {
         "id": "aud_01ARZ3NDEKTSV4RRFFQ69G5FB6",
@@ -924,6 +951,7 @@
     "talk.state": [{ "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "n": 13, "readTo": 9, "unread": 4, "lastAt": 1758197000000 }, { "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "n": 13, "readTo": 13, "unread": 0 }],
     "tracked.state": [{"id": "trk_01ARZ3NDEKTSV4RRFFQ69G5TK1", "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "seq": 40, "title": "Why does the relay drop frames over 4 MiB?", "status": "open", "answers": [], "createdAt": 1758196700000, "updatedAt": 1758196700000}, {"id": "trk_01ARZ3NDEKTSV4RRFFQ69G5TK2", "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "seq": 52, "title": "Rename the build script to make.ts", "status": "answered", "answers": [{"seq": 57, "at": 1758196760000, "status": "partial"}, {"seq": 63, "at": 1758196800000, "status": "answered"}], "createdAt": 1758196740000, "updatedAt": 1758196800000}, {"id": "trk_01ARZ3NDEKTSV4RRFFQ69G5TK2", "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "seq": 52, "title": "Rename the build script to make.ts", "status": "partial", "answers": [{"seq": 57, "at": 1758196760000, "status": "partial"}, {"seq": 63, "at": 1758196800000, "status": "answered"}], "createdAt": 1758196740000, "updatedAt": 1758196800000, "marked": true}, {"id": "trk_01ARZ3NDEKTSV4RRFFQ69G5TK1", "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "seq": 40, "title": "Why does the relay drop frames over 4 MiB?", "status": "open", "answers": [], "createdAt": 1758196700000, "updatedAt": 1758196900000, "dismissed": true}],
     "tracker.state": [{"on": true, "sessions": {"sess_01ARZ3NDEKTSV4RRFFQ69G5FB1": false}, "health": {"state": "ok", "at": 1758196700000}}, {"on": false, "sessions": {}, "profile": "prof_01ARZ3NDEKTSV4RRFFQ69G5PF1", "health": {"state": "limited", "detail": "the account is at its usage limit until 14:00", "at": 1758196700000}}],
+    "webtab.state": [{"id": "wtb_01ARZ3NDEKTSV4RRFFQ69G5WT1", "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "url": "http://localhost:5173/", "title": "My app", "target": "253DE0B6F572ADB76EDAD16AD13798FA", "by": "agent", "at": 1758196700000}, {"id": "wtb_01ARZ3NDEKTSV4RRFFQ69G5WT2", "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "url": "about:blank", "by": "user", "at": 1758196760000, "closed": true}],
     "note.state": [{"id": "nte_01ARZ3NDEKTSV4RRFFQ69G5NT1", "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "seq": 212, "call": "toolu_01A2B3C4D5E6F7G8H9", "title": "Migration done: 3 tables moved, orders kept on the old schema", "detail": "**orders** has rows the new schema refuses (null `region`). Kept it on the old one; see `migrations/0042.sql`.", "needsAnswer": false, "urgent": false, "at": 1758196700000}, {"id": "nte_01ARZ3NDEKTSV4RRFFQ69G5NT2", "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "seq": 240, "title": "Deploy to staging or wait for the review?", "needsAnswer": true, "urgent": true, "at": 1758196760000, "answered": {"at": 1758196900000, "seq": 251, "text": "wait for the review"}}, {"id": "nte_01ARZ3NDEKTSV4RRFFQ69G5NT1", "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "seq": 212, "title": "Migration done: 3 tables moved, orders kept on the old schema", "needsAnswer": false, "urgent": false, "at": 1758196700000, "read": 1758196800000, "dismissed": true}],
     "notes.state": [{ "on": true }, { "on": false }],
     "focus.state": [{ "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "focus": { "since": 1758196700000, "until": 1758200300000, "reason": "finishing the migration" } }, { "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1" }],

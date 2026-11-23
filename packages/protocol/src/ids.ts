@@ -47,6 +47,10 @@ export const ID_PREFIXES = {
   tracked: "trk",
   /** Something an agent left the user to read (`notify_user`), which opens at that point in its session. */
   note: "nte",
+  /** A web page open in a tab of the desktop app, beside an agent's chat, that the agent's Playwright may drive. */
+  webTab: "wtb",
+  /** A port of one of the user's machines, opened from another of their devices: the host's share, and the opener's forward of it. */
+  portShare: "prt",
 } as const;
 
 export type IdKind = keyof typeof ID_PREFIXES;
@@ -146,6 +150,8 @@ export const PeerFileId = idSchema("peerFile");
 export const UploadId = idSchema("upload");
 export const TrackedId = idSchema("tracked");
 export const NoteId = idSchema("note");
+export const WebTabId = idSchema("webTab");
+export const PortShareId = idSchema("portShare");
 
 export type NodeId = z.infer<typeof NodeId>;
 export type WorkspaceId = z.infer<typeof WorkspaceId>;
@@ -176,6 +182,8 @@ export type PeerFileId = z.infer<typeof PeerFileId>;
 export type UploadId = z.infer<typeof UploadId>;
 export type TrackedId = z.infer<typeof TrackedId>;
 export type NoteId = z.infer<typeof NoteId>;
+export type WebTabId = z.infer<typeof WebTabId>;
+export type PortShareId = z.infer<typeof PortShareId>;
 
 /** Epoch milliseconds. Every time in every protocol is one of these. */
 export const Timestamp = z.number().int().nonnegative().describe("epoch milliseconds");

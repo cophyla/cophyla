@@ -13,7 +13,7 @@ import { newId, nodeLinkRequests, PROTOCOL_VERSION, RpcError } from "@cophyla/pr
 import type { AgentMode, Client, Node, PairedLan, RelayAccess, Session, Transfer } from "@cophyla/protocol";
 import { pskFromHex } from "@cophyla/relay";
 import pkg from "../package.json" with { type: "json" };
-import { accountMethods, assistantMethods, attachMethods, backupMethods, brainContextMethods, chatMethods, chatSignals, eventMethods, fileMethods, foundationMethods, listenerMethods, metricsMethods, pairAsk, pairingMethods, pipeSignals, remoteMethods, taskMethods, terminalMethods, terminalSignals, updateMethods, viewMethods, viewStageMethods, voiceMethods, voiceSignals } from "./api/methods.ts";
+import { accountMethods, assistantMethods, attachMethods, backupMethods, brainContextMethods, chatMethods, chatSignals, eventMethods, fileMethods, foundationMethods, listenerMethods, metricsMethods, pairAsk, pairingMethods, pipeSignals, portMethods, remoteMethods, taskMethods, terminalMethods, terminalSignals, updateMethods, viewMethods, viewStageMethods, voiceMethods, voiceSignals } from "./api/methods.ts";
 import { ClientRegistry } from "./api/clients.ts";
 import { GRANTS_NS, LOCAL_GRANTS_NS } from "./grants/namespaces.ts";
 import { GrantClock } from "./grants/clock.ts";
@@ -130,12 +130,22 @@ import { trackerMethods } from "./tracker/methods.ts";
 import { usersApp } from "./tracker/apps.ts";
 import { Notes } from "./notes/index.ts";
 import { notesMethods } from "./notes/methods.ts";
+import { WebTabs } from "./webtabs/index.ts";
+import type { WebTabsSeam } from "./api/server.ts";
+import { webTabsMethods } from "./webtabs/methods.ts";
+import { cdpEndpoint, readCdpToken } from "./webtabs/token.ts";
+import { agentEndpoint } from "./webtabs/endpoint.ts";
+import { CdpProxy, connectUpstream } from "./webtabs/cdp.ts";
 import { openSource } from "./transfers/source.ts";
 import { HOOK_JSON_FILENAME } from "./sessions/shim.ts";
 import type { AgentInstall } from "./sessions/model.ts";
 import { DirectClients } from "./direct/clients.ts";
 import { directMethods, directSignals } from "./direct/methods.ts";
 import { PipeHub } from "./remote/pipes.ts";
+import { Ports, speaksTls } from "./remote/ports.ts";
+import type { PortsDeps } from "./remote/ports.ts";
+import { listPorts, windowsProcessesAsync } from "./remote/listening.ts";
+import { SHARE_TIMEOUT_MS } from "./nodes/ports.ts";
 import type { LinkDirectTiming } from "./nodes/direct.ts";
 import { defaultRaiser, withProcessTable, withTmux } from "./sessions/focus.ts";
 import type { WindowRaiser } from "./sessions/focus.ts";
@@ -268,6 +278,8 @@ export interface DaemonOptions {
   };
   /** The remote module's seams: the command runner, the host API, the viewer, the web sidecar's command, the capture, the display's size. */
   remote?: Pick<RemoteDeps, "exec" | "fetch" | "hostApi" | "moonlight" | "web" | "screenshot" | "display" | "os" | "env">;
+  /** The ports' seams: what listens here, whether a port speaks TLS or is free here, how long a forward waits unused and a share lasts. */
+  ports?: Partial<Pick<PortsDeps, "list" | "tls" | "free" | "idleMs" | "shareMs" | "now">>;
   /** The direct connections' seams: the helper's command and spawner (a test has no helper unless it gives one, since a real one binds the machine's addresses), a clock. */
   direct?: Pick<DirectDeps, "command" | "spawn" | "now"> & { openTimeoutMs?: number; link?: LinkDirectTiming };
   /** The sign-in door's seams: the OS it believes it is on, its pipe and how it opens, the elevated run, the platform it installs from. */
@@ -340,6 +352,8 @@ export interface Daemon {
   tracker: Tracker;
   /** The notes agents leave the user (`notify_user`). */
   notes: Notes;
+  /** The web tabs beside agents' chats on this machine. */
+  webTabs: WebTabs;
   /** What a session a leader messaged does next, told to the leader. */
   reports: Reports;
   /** The user's teammates: other Cophyla users whose agents reach theirs in the folders shared. */
@@ -382,6 +396,8 @@ export interface Daemon {
   door: DoorManager;
   /** The pipes stream pages ride where there is no route to their desktop, and transfers' files. */
   pipes: PipeHub;
+  /** This machine's ports opened on the user's other devices, and theirs opened here. */
+  ports: Ports;
   /** The transfers this machine receives. */
   transfers: Transfers;
   direct: Direct;
@@ -645,6 +661,8 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     store,
     bus,
     asks,
+    // the sessions it starts drive the web tabs with their Playwright: the endpoint names the session, sealed with the hook token
+    agentEnv: (native): Record<string, string> => (api ? { PLAYWRIGHT_MCP_CDP_ENDPOINT: cdpEndpoint(api.port, hookToken, native) } : {}),
     // what a session has not read in its group chats, beside the prompt it is given (the router is made further down)
     promptNote: (s) => (config.agent_messages.enabled ? agentMessages.promptNote(s) : Promise.resolve(undefined)),
     config: config.sessions,
@@ -946,7 +964,55 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
       const require = nodes?.requirePath();
       return openSource(target, deliver, gone, require ? { require } : {});
     },
+    openPortOnLink: (hop, params) => nodes!.openPortPipeOn(hop, params),
+    portOf: (share, viewer) => ports.portOf(share, viewer),
+    meter: (share) => ports.meter(share),
+    // a port's bytes ride only a link or a client that carries them straight, never the relay
+    straight: (source) => {
+      if (source.startsWith("link:")) return nodes?.straight(source.slice("link:".length)) ?? false;
+      const entry = clients.get(source.slice("client:".length));
+      if (!entry) return false;
+      if (entry.listener === "loopback" || entry.listener === "controller") return true;
+      return entry.listener === "p2p" && entry.client.path !== "turn";
+    },
     log: log.child("pipes"),
+  });
+
+  // A machine's localhost opened on another of the user's devices: the shares of this machine's
+  // ports, and the forwards of other machines' this node's clients opened, their pipes the ones above.
+  const portsOs = hostOs();
+  const ports: Ports = new Ports({
+    selfId: identity.id,
+    get selfName() {
+      return identity.name;
+    },
+    hands: () => nodes?.role.hands === true,
+    sharesNone: () => (config.node.scope.kind !== "machine" || nodes?.confinement()?.active ? "this machine shares some folders alone, not its localhost" : nodes?.role.hands ? "this machine is lent as hands: its localhost is its owner's" : undefined),
+    hub: pipes,
+    gate,
+    log: log.child("ports"),
+    request: (target, method, params) => nodes!.linkRequest(target, method, params, { timeoutMs: SHARE_TIMEOUT_MS }),
+    host: (target) => {
+      const row = nodes?.registry.get(target);
+      if (!row) return undefined;
+      return { name: row.name, online: row.status === "online", machine: row.scope.kind === "machine", hands: row.hands === true, door: row.door !== undefined, ports: row.capabilities.ports === true };
+    },
+    primaryName: () => {
+      const id = nodes?.primaryId();
+      return id ? nodes?.registry.get(id)?.name : undefined;
+    },
+    way: (target) => nodes?.portWay(target) ?? { refused: "none" },
+    notify: (client, forwards) => void clients.sendLocal(client, "port.state", { forwards }),
+    list: () =>
+      listPorts({
+        os: portsOs,
+        exec: defaultExec,
+        own: () => [process.pid],
+        helpers: () => sidecars.list().flatMap((s) => (s.pid !== undefined ? [s.pid] : [])),
+        ...(portsOs === "windows" ? { processes: () => windowsProcessesAsync(defaultExec) } : {}),
+      }),
+    tls: (port) => speaksTls(port),
+    ...(opts.ports ?? {}),
   });
 
   // The remote desktop: this node's host, the viewers it runs for its clients, the brain's
@@ -1226,6 +1292,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     terminals: () => nodeTerminals,
     direct: () => direct,
     pipes: () => pipes,
+    ports: () => ports,
     transfers: () => transfers,
     folders: (path, opts) => folders(path, opts),
     ...(opts.direct?.link ? { directTiming: opts.direct.link } : {}),
@@ -1657,6 +1724,30 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     history: (id, o) => sessions.history(id, o),
   });
   notesLive.start();
+  // Web tabs beside agents' chats, opened by the desktop app on this machine.
+  const webTabs = new WebTabs({
+    bus,
+    refuse: (session) => {
+      const s = sessions.get(session);
+      if (!s) return `no session ${session}`;
+      return s.node === identity.id ? undefined : "a web tab opens on the machine the agent runs on, and this session runs on another one";
+    },
+    machine: () => identity.name,
+    log: log.child("webtabs"),
+  });
+  const webTabsSeam: WebTabsSeam = {
+    hello: (client) => webTabs.hostConnected(client.id),
+    cdp: (token) => {
+      const native = readCdpToken(hookToken, token);
+      if (!native) return { refuse: "no such web tab endpoint", status: 404 };
+      const rec = sessions.find("claude", native);
+      if (!rec) return { refuse: "that session is not running on this machine", status: 404 };
+      if (!webTabs.hosted) return { refuse: `open Cophyla's desktop app on ${identity.name}: the agent's browser is a tab in it`, status: 503 };
+      const session = rec.session.id;
+      const wlog = log.child("webtabs");
+      return agentEndpoint(webTabs, session, () => new CdpProxy({ tabs: webTabs, session, upstream: connectUpstream, log: wlog }), wlog);
+    },
+  };
   // Group chats: posts by the user's agents, the user, and teammates and theirs; kept by the primary.
   const groupMedia = new GroupMedia(p.data, log.child("groups"));
   const groupsLive: Groups = new Groups({
@@ -1959,7 +2050,8 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     }),
     ...voiceMethods({ voice, speech: deliver, speakerOn: (id) => presence.speakerOn(id) }),
     ...metricsMethods({ metrics, ledger, nodeId: identity.id }),
-    ...remoteMethods({ remote, pipes, door: doorManager }),
+    ...remoteMethods({ remote, pipes, door: doorManager, ports }),
+    ...portMethods({ ports }),
     ...accountMethods({ cloud, keys }),
     ...backupMethods({ sync: backup }),
     ...grantMethods({
@@ -2000,6 +2092,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     ...transferMethods({ transfers: () => transfers, nodeId: identity.id, ...(revealer ? { revealer } : {}) }),
     ...trackerMethods({ tracker: () => (routesHere() ? trackerLive : undefined) }),
     ...notesMethods({ notes: () => (routesHere() ? notesLive : undefined) }),
+    ...webTabsMethods({ tabs: webTabs }),
   }, forwardHost);
   // What one of the user's own apps sent a session (the desktop app, the phone, a browser), by
   // its ref, to the tracker and the notes: a script's or a tool's send through cophylad is typed
@@ -2044,6 +2137,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     activity.forget(client.id);
     voice?.onDisconnect(client.id);
     remoteModule.onDisconnect(client.id);
+    ports.clientGone(client.id);
     pipes.gone(`client:${client.id}`);
     directClients.clientGone(client.id);
   };
@@ -2054,6 +2148,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     metrics.onDisconnect(client.id);
     nodes?.onDisconnect(client.id);
     terminalStreams?.dropClient(client.id);
+    webTabs.clientGone(client.id);
   };
   const onDisconnect = (client: Client) => {
     socketGone(client);
@@ -2079,6 +2174,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
 
   api = startApi(
     {
+      webTabs: webTabsSeam,
       config,
       log,
       gate,
@@ -2341,6 +2437,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     leaders: leadersLive,
     tracker: trackerLive,
     notes: notesLive,
+    webTabs,
     reports: reportsLive,
     teammates: teammatesLive,
     teams: teamsRun,
@@ -2377,6 +2474,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     remote,
     door: doorManager,
     pipes,
+    ports,
     transfers,
     direct,
     nodes,
@@ -2420,6 +2518,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
       await direct.stop();
       await stopBrain();
       await voice.stop();
+      ports.stop();
       pipes.closeAll("stopping");
       await remote.stop();
       await sidecars.stopAll();

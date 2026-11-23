@@ -101,6 +101,8 @@ import { ASSISTANT_LABEL } from "./tether/streams.ts";
 import { uuidv7Time } from "./uuidv7.ts";
 
 export interface SessionsDeps {
+  /** What a Claude session cophylad starts gets in its environment besides the profile's, by its native id: where its Playwright drives the web tabs (`PLAYWRIGHT_MCP_CDP_ENDPOINT`). */
+  agentEnv?: (native: string) => Record<string, string>;
   store: Store;
   bus: Bus;
   asks: Asks;
@@ -2900,7 +2902,7 @@ export class Sessions implements SessionHost {
       await opener.open({
         argv: this.claudeCommand({ command, sessionId, intent, profile, cwd: workspace.path, launch: this.terminalLaunch(launch), model }),
         cwd: workspace.path,
-        env: { ...env.set, ...(profile.env as Record<string, string> | undefined) },
+        env: { ...env.set, ...(profile.env as Record<string, string> | undefined), ...this.agentEnv(sessionId) },
         ...(env.unset.length > 0 ? { unset: env.unset } : {}),
         title: sessionName(intent) || "cophylad session",
       });
@@ -2981,7 +2983,7 @@ export class Sessions implements SessionHost {
     const timeoutMs = this.deps.acp?.config.spawn_timeout_ms ?? 60000;
     const command = profile.exec?.command ?? Bun.which("claude") ?? "claude";
     const argv = this.claudeCommand({ command, sessionId, intent, profile, cwd: workspace.path, launch, model });
-    const env = this.claudeSpawnEnv(profile);
+    const env = { ...this.claudeSpawnEnv(profile), ...this.agentEnv(sessionId) };
     let term: TerminalRef;
     try {
       term = (await tether.spawn({ argv, cwd: workspace.path, env, labels: { app: "cophylad", "cophylad.session": sessionId } })).ref;
@@ -3420,7 +3422,7 @@ export class Sessions implements SessionHost {
     const timeoutMs = this.deps.acp?.config.spawn_timeout_ms ?? 60000;
     let term: TerminalRef;
     try {
-      term = (await tether.spawn({ argv: this.resumeArgv(session, profile, opts, false, mode), cwd: session.cwd, env: this.spawnEnv(session.harness, profile), labels: { app: "cophylad", "cophylad.reopen": session.id } })).ref;
+      term = (await tether.spawn({ argv: this.resumeArgv(session, profile, opts, false, mode), cwd: session.cwd, env: { ...this.spawnEnv(session.harness, profile), ...(session.harness === "claude" ? this.agentEnv(session.native.id) : {}) }, labels: { app: "cophylad", "cophylad.reopen": session.id } })).ref;
     } catch (e) {
       throw new RpcError("unavailable", `tether could not start session ${session.id} again: ${e instanceof Error ? e.message : String(e)}`);
     }
@@ -3452,7 +3454,7 @@ export class Sessions implements SessionHost {
     await opener.open({
       argv: this.resumeArgv(session, profile, opts, true, mode),
       cwd: session.cwd,
-      env: { ...env.set, ...(profile.env as Record<string, string> | undefined) },
+      env: { ...env.set, ...(profile.env as Record<string, string> | undefined), ...this.agentEnv(session.native.id) },
       ...(env.unset.length > 0 ? { unset: env.unset } : {}),
       title: session.title ?? (sessionName(session.intent ?? "") || "cophylad session"),
     });
@@ -4127,6 +4129,11 @@ export class Sessions implements SessionHost {
     for (const [k, v] of Object.entries({ ...(this.deps.env ?? scrub(process.env)), ...dir.set, ...(profile.env as Record<string, string> | undefined) })) if (v !== undefined) env[k] = v;
     for (const k of dir.unset) delete env[k];
     return env;
+  }
+
+  /** What a Claude session cophylad starts gets besides its profile's, by its native id (the web tabs' endpoint); nothing without one. */
+  private agentEnv(native: string | undefined): Record<string, string> {
+    return native && this.deps.agentEnv ? this.deps.agentEnv(native) : {};
   }
 
   /** The environment a Claude process cophylad starts in tether gets: the daemon's own, scrubbed, under the profile. */

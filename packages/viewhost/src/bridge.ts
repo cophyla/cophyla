@@ -44,7 +44,11 @@
 // scripts apart from its own; a host that serves none leaves it out. `desk` in `host.ready`
 // says the host is a wide window with a pointer on a computer, whatever kind of client it
 // connected as: the controller page in a desktop browser, which a view lays out and loads as
-// it does in the desktop app. DOM-free.
+// it does in the desktop app. A host that opens web tabs beside agents' chats (`webTabs` in
+// `host.ready`: the desktop app on Windows, which cophylad's `webtab.*` asks to open and close
+// them) shows one over the rectangle `host.webtab {op: "place"}` names or hides it, takes it to a
+// page, back, forward, reloads it or opens its DevTools, for a view with the `sessions:write`
+// scope, and only there. DOM-free.
 
 import { failure, notification, notificationScope, protocolError, requestScope, RpcNotification, RpcRequest, signalScope } from "@cophyla/protocol";
 import type { RpcId, RpcMessage, RpcResponse, Scope, ViewManifest } from "@cophyla/protocol";
@@ -86,6 +90,8 @@ export interface HostReady {
   embed?: true;
   /** The host is a wide window with a pointer, on a computer: the controller page in a desktop browser. */
   desk?: true;
+  /** The host opens the web tabs beside agents' chats and shows them over the view where it says (`host.webtab`): the desktop app on Windows. */
+  webTabs?: true;
 }
 
 /** The host's microphone, for a view that draws the talk button: why it is off, while it is. */
@@ -132,13 +138,15 @@ export interface BridgeConfig {
   embed?: boolean;
   /** The host is a wide window with a pointer, on a computer (`desk` in `host.ready`). */
   desk?: boolean;
+  /** The host opens web tabs and answers `host.webtab` through `host` (`webTabs` in `host.ready`); absent, `host.webtab` answers `unsupported`. */
+  webTabs?: boolean;
 }
 
 /** The requests a view may make of the host itself, by method. */
 export type HostRequests = (method: string, params: unknown) => Promise<unknown>;
 
 /** The host requests a view may make, and the scope each needs; `null` is none. */
-const HOST_METHODS: Record<string, Scope | null> = { "host.open": "remote", "host.place": "remote", "host.close": "remote", "host.chooseView": null, "host.settings": null, "host.openLink": null, "host.savePrefs": null, "host.filePaths": null };
+const HOST_METHODS: Record<string, Scope | null> = { "host.open": "remote", "host.place": "remote", "host.close": "remote", "host.chooseView": null, "host.settings": null, "host.openLink": null, "host.savePrefs": null, "host.filePaths": null, "host.webtab": "sessions:write" };
 
 /** The record a `host.savePrefs` keeps: a plain object whose JSON fits in `PREFS_MAX`. */
 export function viewPrefs(params: unknown): ViewPrefs {
@@ -208,6 +216,7 @@ export class Bridge {
   private docFrame?: string;
   private embed: boolean;
   private desk: boolean;
+  private webTabs: boolean;
   private n = 0;
   /** The host's microphone as last said, so a view that loads while it is off hears it. */
   private micState: HostMic = {};
@@ -261,6 +270,7 @@ export class Bridge {
     if (cfg.docFrame) this.docFrame = cfg.docFrame;
     this.embed = cfg.embed === true;
     this.desk = cfg.desk === true;
+    this.webTabs = cfg.webTabs === true;
     this.io = io;
   }
 
@@ -342,6 +352,8 @@ export class Bridge {
   private hostRequest(req: RpcRequest): void {
     const needs = HOST_METHODS[req.method];
     const own: Record<string, HostRequests | undefined> = { "host.chooseView": this.chooser, "host.settings": this.settings, "host.openLink": this.links, "host.savePrefs": this.savePrefs, "host.filePaths": this.filePaths };
+    // a web tab is the host's own requests' too, where the host opens web tabs at all
+    if (req.method === "host.webtab" && !this.webTabs) own[req.method] = undefined;
     const handler = req.method in own ? own[req.method] : this.host;
     if (needs === undefined || !handler) {
       this.io.toView(failure(req.id, protocolError("unsupported", `this host has no ${req.method}`)));
@@ -391,6 +403,7 @@ export class Bridge {
     if (this.docFrame) params.docFrame = this.docFrame;
     if (this.embed) params.embed = true;
     if (this.desk) params.desk = true;
+    if (this.webTabs && this.host) params.webTabs = true;
     this.io.toView(notification("host.ready", params));
     this.io.toView(notification("host.state", { connected: true }));
     if (this.hasTalk && this.micState.error !== undefined) this.io.toView(notification("host.mic", this.micState));

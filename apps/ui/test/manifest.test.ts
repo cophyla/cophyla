@@ -183,6 +183,25 @@ describe("shell configuration", () => {
     expect(read("..", "host", "main.ts")).toContain('"stream:closed"');
   });
 
+  test("a web tab has a browser of its own with the debugging port, keeps its logins and opens DevTools, and the host hears of it; every other web view has DevTools in a debug build alone", () => {
+    const webtab = read("src", "webtab.rs");
+    expect(webtab).toContain('.join("webtabs")');
+    expect(webtab).toContain('format!("{} --remote-debugging-port={port}", crate::BROWSER_ARGS)');
+    expect(webtab).toContain(".devtools(true)");
+    expect(webtab).not.toContain(".incognito(");
+    expect(webtab).toContain("NewWindowResponse::Deny");
+    const main = read("..", "host", "main.ts");
+    for (const event of ["webtab:state", "webtab:newwindow", "webtab:closed"]) {
+      expect(webtab).toContain(`"${event}"`);
+      expect(main).toContain(`"${event}"`);
+    }
+    // Tauri's devtools feature opens every web view's in a release build unless it says otherwise
+    expect(read("Cargo.toml")).toMatch(/\ntauri = \{ version = "2", features = \[[^\]]*"devtools"[^\]]*\] \}/);
+    expect(read("src", "main.rs")).toContain("pub const DEVTOOLS: bool = cfg!(debug_assertions);");
+    expect(read("src", "main.rs")).toContain(".devtools(DEVTOOLS)");
+    expect(read("src", "stream.rs").match(/\.devtools\(crate::DEVTOOLS\)/g)).toHaveLength(2);
+  });
+
   test("notifications: WinRT toasts tagged by ask on Windows, notify-rust on Linux, its UNUserNotificationCenter backend on macOS with a wait that a dismissal stops; no notification plugin", () => {
     const cargo = read("Cargo.toml");
     expect(cargo).not.toContain("tauri-plugin-notification");

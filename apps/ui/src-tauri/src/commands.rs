@@ -1,7 +1,7 @@
 // The app commands the host page may call for the link, the views and the asks (a stream's
-// window has its own two, in stream.rs). Every one is named in commands.txt, which build.rs
-// turns into the app manifest, and granted to the `host` window alone in
-// capabilities/host.json. A view never reaches them: it runs in a sandboxed frame with no
+// window has its own, in stream.rs, and a web tab its own, in webtab.rs). Every one is named
+// in commands.txt, which build.rs turns into the app manifest, and granted to the `host` window
+// alone in capabilities/host.json. A view never reaches them: it runs in a sandboxed frame with no
 // IPC, and speaks to the host by postMessage.
 
 use serde_json::Value;
@@ -15,11 +15,14 @@ use crate::views::{StageView, Staged, StagedBase};
 /// after the hello, so the link reconnects and cophylad re-sends its post-hello snapshot; the
 /// page is told `connecting` and learns of the new connection like any other. `audio` is what
 /// the page has — a microphone, a speaker, the codecs its web view speaks — and the hello says
-/// it from then on.
+/// it from then on; `webTabs`, that the page opens web tabs (webtab.rs), likewise.
 #[tauri::command]
-pub fn cophylad_attach(link: State<'_, Link>, audio: Option<Value>) -> LinkSnapshot {
+pub fn cophylad_attach(link: State<'_, Link>, audio: Option<Value>, web_tabs: Option<bool>) -> LinkSnapshot {
     if let Some(audio) = audio {
         link.set_audio(&audio);
+    }
+    if let Some(on) = web_tabs {
+        link.set_web_tabs(on);
     }
     let mut snapshot = link.snapshot();
     if snapshot.state == LinkState::Connected {

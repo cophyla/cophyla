@@ -101,6 +101,8 @@ export interface BusEvents {
   "note.state": ClientNotificationParams<"note.state">;
   /** Whether agents may leave the user notes changed. */
   "notes.state": ClientNotificationParams<"notes.state">;
+  /** A web tab beside an agent's chat opened, moved or loaded; `closed` its last row. */
+  "webtab.state": ClientNotificationParams<"webtab.state">;
   "workspace.state": Workspace;
   "chat.message": Message;
   "chat.delta": ClientNotificationParams<"chat.delta">;

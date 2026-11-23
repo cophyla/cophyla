@@ -12,8 +12,8 @@
 
 import { z } from "zod";
 import { Access, AgentListing, AgentMode, AgentRef, AudioCapabilities, Ask, ClientKind, ConnectionListing, Focus, GrantRole, GroupPhotoType, IceServer, MachineListing, Node, NodeRole, Session, TeammateListing, Terminal, Transfer, TransferReason, Workspace } from "./entities.ts";
-import { AgentMessageId, AskId, ClientId, ClusterId, ConnectionId, GrantId, GrantRef, GroupId, GroupPhotoId, NodeId, SessionId, TeammateId, Timestamp } from "./ids.ts";
-import { clientNotifications, clientRequests, clientSignals, DisplaySize, IceCandidate, PipeId, StreamTransport } from "./client.ts";
+import { AgentMessageId, AskId, ClientId, ClusterId, ConnectionId, GrantId, GrantRef, GroupId, GroupPhotoId, NodeId, PortShareId, SessionId, TeammateId, Timestamp } from "./ids.ts";
+import { clientNotifications, clientRequests, clientSignals, DisplaySize, IceCandidate, PipeId, PortNumber, StreamTransport } from "./client.ts";
 import { Secret } from "./invite.ts";
 import { FilePiece, FileTreePage, GroupPhotoRef, PeerSource, PhotoPiece, TreeEntry } from "./peer-files.ts";
 
@@ -247,6 +247,34 @@ export const nodeLinkRequests = {
   "remote.pipe.open": { params: z.object({ node: NodeId, pipe: PipeId }), result: z.object({ window: z.number().int().positive() }) },
   /** Either way: a stream `remote.ticket` opened on `node` for `viewer` ended (its window closed, or its client went), and its session goes. */
   "remote.close": { params: z.object({ node: NodeId, stream: z.string().min(1).max(64), viewer: z.string().min(1).max(128) }), result: Empty },
+  /**
+   * Either way, carried on by the primary: `node` shares `port` of its own loopback with
+   * `viewer`, the machine a device of the user's opened it from (named `name`, for the audit),
+   * as the primary vouches for it: the primary sets it on every share it carries on, over what
+   * a secondary said. Gated on `node` as the node that asked, unasked by default. `share`
+   * names it in the pipes; it lasts until `port.unshare`, the link toward the viewer going, or
+   * `expiresAt`. `tls`: what listens there answered a TLS handshake, so its pages are
+   * `https:`. Only where every link it crosses goes straight, never through the relay; an
+   * older node refuses the name.
+   */
+  "port.share": {
+    params: z.object({ node: NodeId, port: PortNumber, viewer: NodeId, name: z.string().max(100).optional() }),
+    result: z.object({ share: PortShareId, expiresAt: Timestamp, tls: z.boolean().optional() }),
+  },
+  /**
+   * Either way, carried on by the primary: the share ends, its pipes with it, for `viewer`, the
+   * machine it is for, as the primary vouches (and sets, as on `port.share`). The answer is what
+   * went through it.
+   */
+  "port.unshare": { params: z.object({ node: NodeId, share: PortShareId, viewer: NodeId.optional() }), result: z.object({ connections: z.number().int().nonnegative(), bytes: z.number().int().nonnegative() }) },
+  /**
+   * Either way, carried on by the primary as `remote.pipe.open` is: a pipe to the port `share`
+   * names on `node`, which connects to its own loopback alone. `viewer` is the machine the
+   * share is for, as the primary vouches; a pipe for a share of another machine's is refused.
+   * A name of its own, since `remote.pipe.open` drops what it does not know and an older node
+   * would open a stream's pipe.
+   */
+  "port.pipe.open": { params: z.object({ node: NodeId, pipe: PipeId, share: PortShareId, viewer: NodeId.optional() }), result: z.object({ window: z.number().int().positive() }) },
   /**
    * Either way, carried on by the primary: what `path` on `node` holds, for a transfer to
    * pull. A file is one entry (`rel` ""); a folder is its folders and files under it, each

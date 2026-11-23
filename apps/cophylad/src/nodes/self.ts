@@ -93,6 +93,8 @@ export function selfNode(
       reopenProfile: true,
       // a session of its own reopens in a mode named, over the one it was last in
       reopenMode: true,
+      // its localhost opens on the user's other devices, and it carries one on; a machine that shares some folders alone shares none
+      ...(config.node.scope.kind === "machine" ? { ports: true } : {}),
     },
     versions: { platform: platformVersion, protocol: PROTOCOL_VERSION, ...(brainVersion !== undefined ? { brain: brainVersion } : {}) },
     lastSeen: now,

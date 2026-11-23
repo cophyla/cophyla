@@ -20,7 +20,8 @@
 // told in its `host.ready`. A host that lays stream pages over the view (`embed`) hears when
 // what it laid there must go under the page's own layers (`onOverlay`, while the picker or
 // the settings are open) and when it must go altogether (`onUnmount`: the view was replaced,
-// or reloaded itself), and tells the view a stream is gone with `streamClosed`. A host that is
+// or reloaded itself), and tells the view a stream is gone with `streamClosed`; one that opens
+// web tabs beside agents' chats (`webTabs`, answering `host.webtab`) hears the same of them. A host that is
 // a wide window on a computer without being the desktop app says so (`desk`), and the view is
 // told in its `host.ready`; one that is a paired device of its own shows itself in the settings
 // (`device`). Before the first view mounts, a node whose user has not yet said which of their
@@ -72,6 +73,8 @@ export interface ViewHostDeps {
   filePaths?: (names?: string[]) => Promise<string[]>;
   /** The host lays stream pages over the view (`host.open {embed}`, `host.place`, `host.close`): the desktop app. */
   embed?: boolean;
+  /** The host opens web tabs beside agents' chats and lays them over the view (`host.webtab`, through `host`): the desktop app on Windows. */
+  webTabs?: boolean;
   /** The view's document went: replaced, or reloaded by the view itself. What the host laid over it goes. */
   onUnmount?: () => void;
   /** The picker or the settings opened (`true`) or both are closed again: what the host laid over the view hides meanwhile. */
@@ -270,6 +273,7 @@ export class ViewHost {
         ...(this.deps.filePaths ? { filePaths: this.deps.filePaths } : {}),
         ...(staged.docFrame ? { docFrame: staged.docFrame } : {}),
         ...(this.deps.embed ? { embed: true } : {}),
+        ...(this.deps.webTabs ? { webTabs: true } : {}),
         ...(this.deps.desk ? { desk: true } : {}),
         prefs: prefsStore(this.deps.store ?? pageStorage(), manifest.id),
       },

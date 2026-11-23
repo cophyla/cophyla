@@ -77,6 +77,8 @@ import type { SessionFiles } from "../sessions/files.ts";
 import type { Profiles } from "../sessions/profiles.ts";
 import type { ScopeHost } from "../sessions/scope.ts";
 import type { PipeHub, PipeWire } from "../remote/pipes.ts";
+import type { LinkWay, Ports } from "../remote/ports.ts";
+import { PortLinks } from "./ports.ts";
 import type { Store } from "../store/index.ts";
 import type { Tasks } from "../tasks/index.ts";
 import type { TaskScheduler } from "../tasks/scheduler.ts";
@@ -164,6 +166,8 @@ export interface NodesDeps {
   direct?: () => Direct | undefined;
   /** The pipes a stream page rides where there is no route to its desktop, and a transfer's files, once built. */
   pipes?: () => PipeHub | undefined;
+  /** This machine's ports opened from the user's other devices, and theirs opened here, once built. */
+  ports?: () => Ports | undefined;
   /** The transfers this node receives, once built: their rows go up with the join, and the primary's clients start them here. */
   transfers?: () => Transfers | undefined;
   /** This computer's folders, for a picker on the primary's clients (Send to…'s), terminals here or not; with their files for a viewer. */
@@ -380,6 +384,28 @@ export class Nodes {
       log: this.log.child("transfers"),
       ...(deps.now ? { now: deps.now } : {}),
     });
+    const ports = new PortLinks({
+      selfId: () => deps.identity.id,
+      primary: () => this.role.role === "primary",
+      gate: deps.gate,
+      ports: () => deps.ports?.(),
+      pipes: () => deps.pipes?.(),
+      // only the primary carries a port on: to the secondary whose port it is
+      carry: (node, method, params, opts) => {
+        if (this.role.role !== "primary") return Promise.reject(new RpcError("unavailable", `no route to ${node} from here`));
+        return this.inbound.forward(node, method, params, opts);
+      },
+      row: (node) => this.registry.get(node),
+      straight: (node) => this.straight(node),
+      // the primary, let work here unasked at the join
+      trusted: (node) => this.role.role !== "primary" && node === this.outbound.primaryId && this.membership !== undefined && this.membership.askPrimary !== true,
+      log: this.log.child("ports"),
+    });
+    // a link that falls back to the relay closes the ports' pipes on it, never moving them onto it
+    const onRelay = (node: string) => {
+      const closed = deps.pipes?.()?.offStraight(`link:${node}`) ?? 0;
+      if (closed > 0) this.log.info("ports' pipes closed: their link fell back to the relay", { node, pipes: closed });
+    };
     this.inbound = new Inbound({
       credential: (grant, kind) => this.credential(grant, kind),
       cluster: () => this.membership?.cluster,
@@ -414,6 +440,8 @@ export class Nodes {
       directNodes: () => deps.config.direct.nodes,
       streams,
       transfers,
+      ports,
+      onRelay,
       ...(deps.agents ? { agents: deps.agents } : {}),
       ...(deps.peerFiles ? { peerFiles: deps.peerFiles } : {}),
       ...(deps.now ? { now: deps.now } : {}),
@@ -462,6 +490,13 @@ export class Nodes {
       ...(deps.directTiming ? { directTiming: deps.directTiming } : {}),
       streams,
       transfers,
+      ports,
+      onRelay,
+      listPorts: () => {
+        const p = deps.ports?.();
+        if (!p) return Promise.reject(new RpcError("unsupported", "this machine lists no ports"));
+        return p.list();
+      },
       ...(deps.transfers ? { receiving: deps.transfers } : {}),
       ...(deps.folders ? { folders: deps.folders } : {}),
       replica: () => this.replica,
@@ -622,6 +657,11 @@ export class Nodes {
     return (await this.linkRequest(hop, "remote.pipe.open", params, { timeoutMs: PIPE_OPEN_TIMEOUT_MS })) as { window: number };
   }
 
+  /** Opens a port's pipe on the link to `hop`, toward the share `params.share` names on `params.node`. */
+  async openPortPipeOn(hop: string, params: { node: string; pipe: string; share: string; viewer: string }): Promise<{ window: number }> {
+    return (await this.linkRequest(hop, "port.pipe.open", params, { timeoutMs: PIPE_OPEN_TIMEOUT_MS })) as { window: number };
+  }
+
   /** Opens a file's pipe on the link to `hop`, from `params.node`: what that node found of the file. */
   async openFilePipeOn(hop: string, params: { node: string; pipe: string; path: string; rel?: string; at: number }): Promise<{ window: number; size: number; mtimeMs: number }> {
     return (await this.linkRequest(hop, "files.pipe.open", params, { timeoutMs: PIPE_OPEN_TIMEOUT_MS })) as { window: number; size: number; mtimeMs: number };
@@ -692,6 +732,43 @@ export class Nodes {
     // a hands node hears of no machine but its primary, which knows the way to the rest
     if (!row) return this.role.hands;
     return row.status === "online";
+  }
+
+  /**
+   * Whether the link this node holds to `node` carries its frames straight, not through the
+   * relay: on the LAN, or a relayed link's data channel that no TURN server relays. On a
+   * secondary, its link to the primary; on the primary, its link to `node`.
+   */
+  straight(node: string): boolean {
+    if (node === this.deps.identity.id) return true;
+    if (this.role.role !== "primary") return node === this.outbound.primaryId && this.outbound.way !== undefined && this.outbound.way !== "relay";
+    if (!this.inbound.linked(node)) return false;
+    const row = this.registry.get(node);
+    if (!row) return false;
+    if (row.via !== "relay") return true;
+    return row.p2p !== undefined && row.p2p.path !== "relay";
+  }
+
+  /**
+   * How a port of `node`'s would go from here: each link between this machine, the primary and
+   * `node` straight (the LAN, or a data channel no TURN server relays), the worst of them the
+   * route; or why not.
+   */
+  portWay(node: string): LinkWay {
+    const self = this.deps.identity.id;
+    if (node === self) return { route: "lan" };
+    if (this.nextHop(node) === undefined) return { refused: "none" };
+    const primary = this.primaryId();
+    let route: "lan" | "direct" = "lan";
+    for (const n of [self, node]) {
+      if (n === primary) continue;
+      const row = n === self ? undefined : this.registry.get(n);
+      const hop = this.hopOf(n);
+      if (hop === undefined) return { refused: "none" };
+      if (hop === "relay" || row?.p2p?.path === "relay") return { refused: "relay" };
+      if (hop === "direct") route = "direct";
+    }
+    return { route };
   }
 
   /**

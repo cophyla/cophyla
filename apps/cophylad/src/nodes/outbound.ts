@@ -62,6 +62,8 @@ import { LINK_VIEWER, linkViewer } from "./terminals.ts";
 import type { NodeTerminals } from "./terminals.ts";
 import { FILE_LINK_REQUESTS } from "./transfers.ts";
 import type { TransferLinks } from "./transfers.ts";
+import { PORT_LINK_REQUESTS } from "./ports.ts";
+import type { PortLinks } from "./ports.ts";
 import type { Transfers } from "../transfers/index.ts";
 
 export interface HelloAnswer {
@@ -184,6 +186,12 @@ export interface OutboundDeps {
   streams?: StreamLinks;
   /** Transfers pulling from this machine: what a path holds and a file's pipe, served here. */
   transfers?: TransferLinks;
+  /** Ports of this machine a device of the user's opens: the share, its end and its pipes, served here. */
+  ports?: PortLinks;
+  /** What listens on this machine, for the primary's clients. */
+  listPorts?: ServeDeps["listPorts"];
+  /** The relayed link's frames moved back from its data channel onto the relay. */
+  onRelay?: (node: string) => void;
   /** The transfers this machine receives: their rows go up with the join, and the primary's clients start them here. */
   receiving?: () => Transfers | undefined;
   /** This computer's folders, for a picker on the primary's clients, with or without terminals here. */
@@ -370,7 +378,11 @@ export class Outbound {
         deliver: (text) => rpc.onText(text),
         close: (code, reason) => raw.close(code, reason),
         log: this.log.child("switch"),
-        onMode: (mode) => this.linkDirect?.modeChanged(mode),
+        onMode: (mode) => {
+          this.linkDirect?.modeChanged(mode);
+          const primary = this.linkedInfo?.primary;
+          if (mode === "relay" && primary) this.deps.onRelay?.(primary);
+        },
       });
     }
     raw.onMessage((text) => (link ? link.fromRelay(text) : rpc.onText(text)));
@@ -452,6 +464,7 @@ export class Outbound {
         ...(this.deps.terminals ? { terminals: this.deps.terminals } : {}),
         ...(this.deps.receiving ? { transfers: this.deps.receiving } : {}),
         ...(this.deps.folders ? { folders: this.deps.folders } : {}),
+        ...(this.deps.listPorts ? { listPorts: this.deps.listPorts } : {}),
       });
       this.subscribeUpward(peer);
       // What only changes on events goes up once now, so the primary's clients see it before the next change.
@@ -506,6 +519,7 @@ export class Outbound {
     this.linkDirect?.stop();
     this.linkDirect = undefined;
     if (info) this.deps.streams?.gone(info.primary);
+    if (info) this.deps.ports?.gone(info.primary, true);
     if (info && this.deps.metrics) this.deps.metrics.unsubscribe(this.subscriberFor(info.linkId));
     this.linkBuffered = undefined;
     this.switchable = undefined;
@@ -682,6 +696,9 @@ export class Outbound {
     if (FILE_LINK_REQUESTS.has(method)) {
       if (!this.deps.transfers) throw new RpcError("unsupported", `${method} is not served here`);
       return this.deps.transfers.request({ id: info.primary, sessionKey: info.linkId }, method, params);
+    }
+    if (this.deps.ports && PORT_LINK_REQUESTS.has(method)) {
+      return this.deps.ports.request({ id: info.primary, sessionKey: info.linkId }, method, params, (ask) => void peer.notify("pending", { id, ask, at: this.now() }));
     }
     return this.server.serve(method, params, id);
   }

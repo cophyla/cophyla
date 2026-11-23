@@ -15,8 +15,9 @@
 // sessions' files and their viewer a file's text, the terminal requests, so they see,
 // open, start and pick a folder for this node's terminals (terminals.ts), as `link:<client>`,
 // `node.rename`, so they name this machine (not a guest's or a confined one's: its name
-// is its owner's), and the transfer requests, so they send files here and see them come (not
-// to a hands node).
+// is its owner's), the transfer requests, so they send files here and see them come (not
+// to a hands node), and `ports.list`, so their Web pages show what listens here (not a lent
+// machine's).
 //
 // On a node whose owner shared some folders alone (`confine.ts`) this is where the primary's
 // requests are checked: a session, a workspace or a path outside is refused, and so is the
@@ -30,7 +31,7 @@
 // `[gate.policy.node]` would ask is allowed; a workspace node never lets its primary in so.
 
 import { capabilityRequests, ClientId, clientRequests, RpcError } from "@cophyla/protocol";
-import type { Ask, CapabilityRequestName, CapabilityResult, FileText, FolderPick, Hit, LaunchMode, MetricsSample, Principal, RiskClass, RpcId, Session, SessionScope, ToolDefinition, ToolSource, Workspace } from "@cophyla/protocol";
+import type { Ask, CapabilityRequestName, CapabilityResult, FileText, FolderPick, Hit, LaunchMode, ListeningPort, MetricsSample, Principal, RiskClass, RpcId, Session, SessionScope, ToolDefinition, ToolSource, Workspace } from "@cophyla/protocol";
 import type { Confinement } from "./confine.ts";
 import type { ToolConfinement } from "../tools/index.ts";
 import { brainMethods, sendOptions, spawnLoosens } from "../brain-link/methods.ts";
@@ -115,6 +116,9 @@ export const NODE_SERVED_TERMINALS = ["terminal.list", "terminal.spawn", "termin
 
 /** The transfers this node receives, for the primary's clients and its agents' `send_file`: one started here, stopped, tried again, forgotten, listed. */
 export const NODE_SERVED_TRANSFERS = ["transfer.start", "transfer.cancel", "transfer.retry", "transfer.dismiss", "transfer.list"] as const;
+
+/** What listens on this machine, for the Web pages of the primary's clients. */
+export const NODE_SERVED_PORTS = ["ports.list"] as const;
 
 /**
  * The served table: `brainMethods` narrowed to the allowlist, with `ui.say` and its kin never
@@ -216,6 +220,8 @@ export interface ServeDeps {
   transfers?: () => Transfers | undefined;
   /** This computer's folders, for a picker on the primary's clients: Send to…'s needs no terminal here; with their files for a viewer. */
   folders?: (path: string | undefined, opts?: { files?: boolean }) => Promise<FolderPick>;
+  /** What listens on this machine, for `ports.list`. */
+  listPorts?: () => Promise<{ ports: ListeningPort[] }>;
   /** The folders this node shares with its primary, when its owner named some. */
   confine?: () => Confinement | undefined;
   /** This node answers the asks raised on it itself: the primary answers none. */
@@ -428,6 +434,10 @@ export class NodeServer {
     if ((NODE_SERVED_FILES as readonly string[]).includes(method)) return this.serveFiles(method as (typeof NODE_SERVED_FILES)[number], params);
     if ((NODE_SERVED_TERMINALS as readonly string[]).includes(method)) return this.serveTerminals(method as (typeof NODE_SERVED_TERMINALS)[number], params);
     if ((NODE_SERVED_TRANSFERS as readonly string[]).includes(method)) return this.serveTransfers(method as (typeof NODE_SERVED_TRANSFERS)[number], params);
+    if ((NODE_SERVED_PORTS as readonly string[]).includes(method)) {
+      if (this.confined() || this.deps.hands?.()) throw new RpcError("denied", "this machine is lent to the primary, not given: its localhost is its owner's");
+      return this.servePorts(params);
+    }
     const name = method as CapabilityRequestName;
     const def = capabilityRequests[name];
     const impl = this.deps.table[name];
@@ -564,6 +574,16 @@ export class NodeServer {
         return {};
       },
     );
+  }
+
+  /** What listens on this machine, for the primary's clients: a read, gated here as the owner's policy says. */
+  private async servePorts(params: unknown): Promise<unknown> {
+    const list = this.deps.listPorts;
+    if (!list) throw new RpcError("unsupported", "this node lists no ports");
+    const parsed = clientRequests["ports.list"].params.safeParse(params ?? {});
+    if (!parsed.success) throw new RpcError("invalid", "bad params for ports.list", parsed.error.issues);
+    const p = parsed.data;
+    return this.gated({ principal: this.deps.principal, action: "ports.list", args: p, ...(p.node !== undefined ? { target: p.node } : {}), sessionKey: this.deps.sessionKey, redactResult: (r) => ({ ports: (r as { ports: unknown[] }).ports.length }) }, () => list());
   }
 
   /** This node's direct connections switched on or off, for the primary's clients. */

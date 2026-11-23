@@ -38,9 +38,13 @@ export class TestForwarder {
   opened = 0;
   failures: string[] = [];
 
-  constructor(link: PipeLink, node: string) {
+  /** The port a phone opened, when its connections go there rather than to a stream page. */
+  private share?: string;
+
+  constructor(link: PipeLink, node: string, share?: string) {
     this.link = link;
     this.node = node;
+    if (share !== undefined) this.share = share;
     link.listen((method, params) => this.onNotification(method, params as { pipe: string; data?: string; reason?: string }));
     this.listener = Bun.listen<Conn>({
       hostname: "127.0.0.1",
@@ -48,7 +52,7 @@ export class TestForwarder {
       socket: {
         open: (s) => {
           s.data = { early: [], out: [] };
-          void this.link.request("remote.pipe.open", { node: this.node }).then(
+          void this.link.request("remote.pipe.open", { node: this.node, ...(this.share !== undefined ? { share: this.share } : {}) }).then(
             (r) => {
               const pipe = (r as { pipe: string }).pipe;
               this.opened++;

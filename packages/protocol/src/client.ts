@@ -60,6 +60,8 @@ import {
   TrackedStatus,
   TrackerState,
   Note,
+  WebTab,
+  WEB_TAB_URL_MAX,
   NotesState,
   Task,
   Teammate,
@@ -81,7 +83,7 @@ import {
   Workspace,
 } from "./entities.ts";
 import { DialogKey, DialogView } from "./entities.ts";
-import { AskId, ClientId, ConnectionId, ControllerId, GrantRef, GroupFileId, GroupId, GroupPostId, ListenerId, MessageId, NodeId, ProfileId, SessionId, TaskId, TeammateConnectionId, TeammateId, TeamId, TeamInviteId, ThreadId, Timestamp, TrackedId, NoteId, TransferId, UploadId, WorkspaceId } from "./ids.ts";
+import { AskId, ClientId, ConnectionId, ControllerId, GrantRef, GroupFileId, GroupId, GroupPostId, ListenerId, MessageId, NodeId, PortShareId, ProfileId, SessionId, TaskId, TeammateConnectionId, TeammateId, TeamId, TeamInviteId, ThreadId, Timestamp, TrackedId, NoteId, WebTabId, TransferId, UploadId, WorkspaceId } from "./ids.ts";
 import { FILE_PIECE_BASE64, GroupPhotoRef, PeerSource, PhotoPiece } from "./peer-files.ts";
 import { CLOSED_MAX, GIT_LOG_MAX, GitState, LlmMessage, SendResult, TaskCreate, TaskFilter, TaskPatch, TimeRange, TurnProgress } from "./capability.ts";
 import { Secret } from "./invite.ts";
@@ -483,6 +485,43 @@ export type DisplaySize = z.infer<typeof DisplaySize>;
 /** A pipe's id: one TCP connection of a stream page, carried over the links. */
 export const PipeId = z.string().min(1).max(64);
 
+/** A TCP port number; a machine's localhost pages are opened by one. */
+export const PortNumber = z.number().int().min(1).max(65535);
+
+/**
+ * A port something listens on, on a machine: on its loopback or on every address, IPv4
+ * (`v4`), IPv6 (`v6`) or both, and the program that listens, where the machine can tell.
+ */
+export const ListeningPort = z.object({ port: PortNumber, v4: z.boolean(), v6: z.boolean(), process: z.string().max(200).optional() });
+export type ListeningPort = z.infer<typeof ListeningPort>;
+
+/**
+ * How an open port's bytes go between the device and the machine: `here`, the machine is this
+ * one; `lan`, on the network; `direct`, over a data channel. Never the relay: a port opens
+ * only where the bytes go straight between the two.
+ */
+export const PortRoute = z.enum(["here", "lan", "direct"]);
+export type PortRoute = z.infer<typeof PortRoute>;
+
+/**
+ * A port of `node`'s this client opened (`port.open`): `local` is the port it is reached at on
+ * this machine (the same number where it was free here), `url` the page to open, `connections`
+ * how many are open through it now, and `bytes` how many went either way. A phone's forwarder
+ * is its own, so its row has neither `local` nor `url`.
+ */
+export const PortForward = z.object({
+  id: PortShareId,
+  node: NodeId,
+  port: PortNumber,
+  local: PortNumber.optional(),
+  url: z.string().max(200).optional(),
+  route: PortRoute,
+  since: Timestamp,
+  connections: z.number().int().nonnegative(),
+  bytes: z.number().int().nonnegative(),
+});
+export type PortForward = z.infer<typeof PortForward>;
+
 /** One side's candidate for the data channel `peer`, either way; `null` ends that side's. */
 const DirectCandidate = z.object({ peer: z.string().min(1).max(64), candidate: IceCandidate.nullable() });
 /** Bytes of a stream page's connection, base64, in order; at most the window the pipe has left. */
@@ -595,6 +634,8 @@ export const clientRequests = {
       name: z.string().optional(),
       node: NodeId.optional(),
       audio: AudioCapabilities,
+      /** The desktop app on the node's own machine, which opens web tabs beside agents' chats (`webtab.*`) and says how each is (`webtab.report`). */
+      webTabs: z.literal(true).optional(),
       /**
        * This client shows a stream page through a forwarder of its own (the phone app's
        * loopback one): `remote.open` answers it a path to fetch through it, not a URL.
@@ -1194,8 +1235,11 @@ export const clientRequests = {
    * Opens a pipe to `node`'s stream proxy (this node's without it): one TCP connection of a
    * stream page the client's forwarder accepted. `window` is the bytes the client may send
    * before an ack. The bytes ride `remote.pipe.data` both ways, acked by `remote.pipe.ack`.
+   * With `share`, the pipe goes to the port `port.open` opened for this client instead, and
+   * for no other client; a node that predates it would open a stream's pipe, so a phone asks
+   * it only of a node that answered a `share`.
    */
-  "remote.pipe.open": { params: z.object({ node: NodeId.optional() }), result: z.object({ pipe: PipeId, window: z.number().int().positive() }) },
+  "remote.pipe.open": { params: z.object({ node: NodeId.optional(), share: PortShareId.optional() }), result: z.object({ pipe: PipeId, window: z.number().int().positive() }) },
   "remote.revoke": { params: z.object({ node: NodeId, viewer: z.string() }), result: Empty },
   /**
    * Shares `node`'s desktop (this node's without it): its host is located, installed when
@@ -1217,6 +1261,26 @@ export const clientRequests = {
    * machine, its service left installed. `remove` takes the service off the machine too.
    */
   "remote.door": { params: z.object({ node: NodeId.optional(), on: z.boolean(), remove: z.boolean().optional() }), result: Empty },
+  /**
+   * What listens on `node` (this node's without it) on its loopback or on every address, the
+   * program by each where the machine can tell; Cophyla's own ports are left out. Answered
+   * by that node.
+   */
+  "ports.list": { params: z.object({ node: NodeId.optional() }), result: z.object({ ports: z.array(ListeningPort) }) },
+  /**
+   * Opens `port` of `node`'s for this client, as if it sat at that machine: answered by the
+   * node the socket is on, which asks `node` to share it over the links. Only where the bytes
+   * go straight between the two, never through the relay. The desktop app gets a forwarder on
+   * its machine's loopback, on the same port where that is free (`local`, and the page's
+   * `url`); the phone app gets the `share` its own forwarder opens pipes to; on `node` itself
+   * the page is on its own loopback (`url`). A browser has no forwarder and is refused.
+   */
+  "port.open": {
+    params: z.object({ node: NodeId, port: PortNumber }),
+    result: z.object({ id: PortShareId, node: NodeId, port: PortNumber, local: PortNumber.optional(), url: z.string().max(200).optional(), share: PortShareId.optional(), route: PortRoute }),
+  },
+  /** Closes a port this client opened: its forwarder stops, its connections end, and the machine stops sharing it. */
+  "port.close": { params: z.object({ id: PortShareId }), result: Empty },
   /**
    * Starts the device-code login, or answers the one already open (a closed panel, another
    * client) with its code until that runs out; `conflict` only when already signed in.
@@ -1408,6 +1472,30 @@ export const clientRequests = {
   "note.dismiss": { params: z.object({ ids: z.array(NoteId).min(1).max(500) }), result: Empty },
   /** Whether agents may leave the user notes. */
   "notes.get": { params: Empty, result: NotesState },
+  /** The web tabs open beside agents' chats on this machine, every session's, oldest first. */
+  "webtab.list": { params: Empty, result: z.object({ tabs: z.array(WebTab) }) },
+  /** Opens a web tab beside a session's chat, in the desktop app of the machine it runs on: the page at `url`, or a blank one. */
+  "webtab.open": { params: z.object({ session: SessionId, url: z.string().max(WEB_TAB_URL_MAX).optional() }), result: z.object({ tab: WebTab }) },
+  /** Closes a web tab; one already gone is passed over. */
+  "webtab.close": { params: z.object({ id: WebTabId }), result: Empty },
+  /**
+   * The desktop app that opens the tabs says how one is now: open in its browser (`target`, with
+   * the browser's debugging `port`), at what page, or gone (`gone`, `error` when it could not
+   * open). The app's own request, never a view's.
+   */
+  "webtab.report": {
+    params: z.object({
+      id: WebTabId,
+      target: z.string().max(100).optional(),
+      port: z.number().int().min(1).max(65535).optional(),
+      url: z.string().max(WEB_TAB_URL_MAX).optional(),
+      title: z.string().max(500).optional(),
+      loading: z.boolean().optional(),
+      gone: z.literal(true).optional(),
+      error: z.string().max(300).optional(),
+    }),
+    result: Empty,
+  },
   /** Lets agents leave the user notes, or stops them (`notify_user` is refused while off). Answers the setting as it is now. */
   "notes.set": { params: z.object({ on: z.boolean() }), result: NotesState },
   /** The agents in focus now, on every machine, with until when and why. */
@@ -1789,6 +1877,8 @@ export const clientNotifications = {
   "node.state": Node,
   "metrics.sample": MetricsSample,
   "remote.state": RemoteState,
+  /** The ports this client opened (`port.open`), whole, to that client alone, whenever one opens, closes or its connections change. */
+  "port.state": z.object({ forwards: z.array(PortForward) }),
   /**
    * An audit entry with its result summarised: `result.body` is never streamed, and the entry
    * of a read-class action, or of the brain's own bookkeeping (what the gate's built-in rules
@@ -1836,6 +1926,8 @@ export const clientNotifications = {
   "tracker.state": TrackerState,
   /** A note an agent left the user, when it is left, placed at its tool call, read, answered or reopened, and once more when it is dismissed (`dismissed`, the last word about it). */
   "note.state": Note,
+  /** A web tab beside an agent's chat, when it opens, moves to another page or loads, and once more when it closes (`closed`, the last word about it). */
+  "webtab.state": WebTab,
   /** Whether agents may leave the user notes, whenever it changes. */
   "notes.state": NotesState,
   /** An agent took focus, or came out of it (no `focus`). */

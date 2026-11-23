@@ -24,6 +24,7 @@ mod stream;
 mod tray;
 mod views;
 mod voice;
+mod webtab;
 
 use tauri::{AppHandle, Manager, RunEvent, Runtime, Theme, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 
@@ -35,6 +36,11 @@ pub const HIDDEN_FLAG: &str = "--hidden";
 /// refuses a web view asking for other ones.
 #[cfg(windows)]
 pub const BROWSER_ARGS: &str = "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --autoplay-policy=no-user-gesture-required";
+
+/// Whether the host page and a stream's page open DevTools: in a debug build only. Tauri's
+/// `devtools` feature, there for a web tab's (webtab.rs), would open every web view's in a
+/// release build too, so each says it.
+pub const DEVTOOLS: bool = cfg!(debug_assertions);
 
 /// Shows or hides the app in the Dock (macOS); nothing elsewhere.
 pub fn dock<R: Runtime>(app: &AppHandle<R>, visible: bool) {
@@ -155,7 +161,7 @@ fn main() {
         .manage(views::Staged::default())
         .register_uri_scheme_protocol(views::SCHEME, views::handle)
         .register_uri_scheme_protocol(docframe::SCHEME, docframe::handle)
-        .invoke_handler(tauri::generate_handler![commands::cophylad_attach, commands::cophylad_send, commands::view_stage, commands::notify_ask, commands::dismiss_ask, commands::user_idle_ms, dropped::dropped_paths, stream::stream_open, stream::stream_embed, stream::stream_place, stream::stream_close, links::open_link, voice::ptt_shortcut])
+        .invoke_handler(tauri::generate_handler![commands::cophylad_attach, commands::cophylad_send, commands::view_stage, commands::notify_ask, commands::dismiss_ask, commands::user_idle_ms, dropped::dropped_paths, stream::stream_open, stream::stream_embed, stream::stream_place, stream::stream_close, webtab::webtab_open, webtab::webtab_place, webtab::webtab_go, webtab::webtab_close, links::open_link, voice::ptt_shortcut])
         .setup(move |app| {
             notify::register(app.handle(), install.as_ref());
             let dev_origin = views::dev_origin(app.handle());
@@ -166,6 +172,7 @@ fn main() {
                 .title("Cophyla")
                 .inner_size(1100.0, 760.0)
                 .min_inner_size(640.0, 420.0)
+                .devtools(DEVTOOLS)
                 // The view is dark, and so is the title bar.
                 .theme(Some(Theme::Dark))
                 // The page's own drag and drop, a file dragged from the view's explorer onto its

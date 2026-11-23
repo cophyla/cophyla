@@ -15,6 +15,12 @@
 // message the account pays for. A link carries at most 1 MiB for all its pipes together, so a
 // pipe cannot starve the link's own frames, nor, through the relay, run past what its buffers
 // hold.
+//
+// A port's pipe (`port.open`) is a stream's, sized as one, that ends at a port the host shared
+// (`share`, never a raw port): the host connects to its own loopback alone, 127.0.0.1 and then
+// [::1] when that is refused, never another address. It rides only links and clients whose
+// bytes go straight between the two machines: one that rides the relay is refused at the
+// open, and a pipe whose link falls back to the relay is closed, never moved onto it.
 
 import { randomBytes } from "node:crypto";
 import type { Socket } from "bun";
@@ -34,14 +40,29 @@ export const FILE_PIPE_ACK = FILE_PIPE_WINDOW / 4;
 /** How long bytes taken wait for more before they are acknowledged anyway. */
 const ACK_LINGER_MS = 20;
 
-/** What a pipe reaches at its far end: a node's stream proxy, or one of its files read from `at` bytes in (`rel` under `path`, for a file of a folder). */
-export type PipeTarget = { kind: "stream" } | FileTarget;
+/** What a pipe reaches at its far end: a node's stream proxy, one of its files read from `at` bytes in (`rel` under `path`, for a file of a folder), or a port it shared. */
+export type PipeTarget = { kind: "stream" } | FileTarget | PortTarget;
 export interface FileTarget {
   kind: "file";
   path: string;
   rel?: string;
   at: number;
 }
+/** A port a host shared with `viewer`, the machine the pipe comes from as the primary vouches for it (this node's own when absent). */
+export interface PortTarget {
+  kind: "port";
+  share: string;
+  viewer?: string;
+}
+
+/** What a port's pipes tell the share or the forward they belong to: the bytes either way, and that one ended. */
+export interface PortMeter {
+  bytes(n: number): void;
+  done(): void;
+}
+
+/** Why a port's pipe is refused or closed when a link or a client under it rides the relay. */
+export const RELAY_REFUSED = "the connection goes through the relay now, and a port's bytes go only straight between the two machines";
 
 /** A file a pipe reads, as the sending machine found it when the pipe opened. */
 export interface PipeFile {
@@ -300,6 +321,15 @@ interface Joined {
   /** Where each remote end is filed, to forget it with the pipe. */
   keys: string[];
   closed: boolean;
+  /** A port's pipe, to the share it names: it rides straight links alone, and what it carries is counted. */
+  port?: boolean;
+  share?: string;
+  meter?: PortMeter;
+}
+
+/** The client or link a remote end's key names: `client:<id>` or `link:<node>`. */
+function sourceOf(key: string): string {
+  return key.slice(0, key.lastIndexOf(":"));
 }
 
 export interface PipeHubDeps {
@@ -320,15 +350,33 @@ export interface PipeHubDeps {
    * whether there is room for more; `gone` closes the pipe from that end (a read that failed).
    */
   openFile?: (target: FileTarget, deliver: (data: Uint8Array) => boolean, gone: (end: End, reason: string) => void) => Promise<{ end: End; file: PipeFile }>;
+  /** `port.pipe.open` on the link to `hop`: a pipe to the port `share` names on `node`. */
+  openPortOnLink?: (hop: string, params: { node: string; pipe: string; share: string; viewer: string }) => Promise<{ window: number }>;
+  /**
+   * The port a share of this node's names, for `viewer`, with the meter its pipe tells:
+   * throws when there is no such share, or it is another machine's.
+   */
+  portOf?: (share: string, viewer: string) => { port: number; meter?: PortMeter };
+  /** The meter of a forward of this node's, by its share, for the pipes it opens. */
+  meter?: (share: string) => PortMeter | undefined;
+  /** Whether a client (`client:<id>`) or a link (`link:<node>`) carries its bytes straight, not through the relay: a port's pipe rides no other. */
+  straight?: (source: string) => boolean;
   log: Logger;
   connect?: typeof Bun.connect;
 }
 
-/** A pipe's far end, the keys its remote ends are filed under, and the file it reads, when it does. */
+/** A pipe's far end, the keys its remote ends are filed under, the file it reads, when it does, and the share it reaches here, when it does. */
 interface Far {
   end: End;
   keys: string[];
   file?: PipeFile;
+  meter?: PortMeter;
+}
+
+/** Whether a connect failed because nothing listens there. */
+function refused(e: unknown): boolean {
+  const code = (e as { code?: unknown } | null)?.code;
+  return code === "ECONNREFUSED" || /refused/i.test(e instanceof Error ? e.message : String(e));
 }
 
 /** A pipe from a file of a node's to an end of this node's: the file as it was found, and how to close the pipe from here. */
@@ -366,24 +414,52 @@ export class PipeHub {
 
   // --- opening ----------------------------------------------------------------------------------
 
-  /** A client's `remote.pipe.open`: a pipe from it to `node`'s stream proxy. */
-  async openForClient(client: string, node: string | undefined): Promise<{ pipe: string; window: number }> {
+  /** A client's `remote.pipe.open`: a pipe from it to `node`'s stream proxy, or with `target` to a port shared with it. */
+  async openForClient(client: string, node: string | undefined, target: PipeTarget = STREAM): Promise<{ pipe: string; window: number }> {
     const pipe = `p_${randomBytes(8).toString("hex")}`;
-    await this.openPipe(`client:${client}`, this.deps.clientWire(client), this.budget(`client:${client}`), pipe, node ?? this.deps.selfId());
+    if (target.kind === "port") this.mustBeStraight(`client:${client}`);
+    await this.openPipe(`client:${client}`, this.deps.clientWire(client), this.budget(`client:${client}`), pipe, node ?? this.deps.selfId(), target);
     return { pipe, window: PIPE_WINDOW };
   }
 
   /**
-   * A link's `remote.pipe.open`, or its `files.pipe.open` (`target` the file), from `from`,
-   * for `node`: served here, or carried on toward it. A file's pipe answers the file as it is.
+   * A link's `remote.pipe.open`, its `files.pipe.open` or its `port.pipe.open` (`target` the
+   * file or the port), from `from`, for `node`: served here, or carried on toward it. A file's
+   * pipe answers the file as it is.
    */
   async openForLink(from: string, params: { node: string; pipe: string }, target: PipeTarget = STREAM): Promise<{ window: number; size?: number; mtimeMs?: number }> {
     const wire = this.deps.linkWire(from);
     if (!wire) throw new Error(`no link to ${from}`);
     // never back the way it came: a secondary asked by its primary for a node it is not
     if (params.node !== this.deps.selfId() && this.deps.nextHop(params.node) === from) throw new Error(`no route to ${params.node} from here`);
+    if (target.kind === "port") this.mustBeStraight(`link:${from}`);
     const file = await this.openPipe(`link:${from}`, wire, this.budget(`link:${from}`), params.pipe, params.node, target);
     return { window: sizesOf(target).window, ...(file ? { size: file.size, mtimeMs: file.mtimeMs } : {}) };
+  }
+
+  /** A port's pipe opens on straight links and clients alone. */
+  private mustBeStraight(source: string): void {
+    if (this.deps.straight && !this.deps.straight(source)) throw new PipeRouteError(RELAY_REFUSED);
+  }
+
+  /** Whether every client and link a port's pipe rides still carries it straight; a stream's and a file's always may go on. */
+  private straightNow(joined: Joined): boolean {
+    const straight = this.deps.straight;
+    if (!joined.port || !straight) return true;
+    return joined.keys.every((k) => straight(sourceOf(k)));
+  }
+
+  /** Passes bytes on to `end`, a port's pipe counted and closed instead once a link under it rides the relay; whether `end` takes more. */
+  private pass(joined: Joined | undefined, end: End, data: Uint8Array): boolean {
+    if (joined?.port) {
+      if (!this.straightNow(joined)) {
+        this.close(joined, RELAY_REFUSED);
+        return false;
+      }
+      joined.meter?.bytes(data.length);
+    }
+    end.write(data);
+    return end.room;
   }
 
   /**
@@ -406,29 +482,27 @@ export class PipeHub {
   }
 
   /**
-   * A connection a forwarder on this node accepted, to `node`'s stream proxy. What the
-   * forwarder reads from the socket it hands to `feed` (it holds what came before this
-   * resolves); the socket's drain and close go to `drain` and `gone`.
+   * A connection a forwarder on this node accepted, to `node`'s stream proxy, or with `target`
+   * to a port it shared. What the forwarder reads from the socket it hands to `feed` (it holds
+   * what came before this resolves); the socket's drain and close go to `drain` and `gone`.
    */
-  async openForSocket(socket: Socket<unknown>, node: string): Promise<SocketPipe> {
+  async openForSocket(socket: Socket<unknown>, node: string, target: PipeTarget = STREAM): Promise<SocketPipe> {
     const near = new TcpEnd();
     near.attach(socket);
     const id = `f_${randomBytes(8).toString("hex")}`;
-    const far = await this.towards(node, STREAM, (data) => {
-      near.write(data);
-      return near.room;
-    });
-    const joined = this.join(id, near, far.end, far.keys);
+    let joined: Joined | undefined;
+    const far = await this.towards(node, target, (data) => this.pass(joined, near, data));
+    const j = this.join(id, near, far.end, far.keys, this.portOpts(target, far));
+    joined = j;
     return {
       feed: (data) => {
-        if (joined.closed) return;
-        far.end.write(data);
-        if (!far.end.room) socket.pause();
+        if (j.closed) return;
+        if (!this.pass(j, far.end, data)) socket.pause();
       },
       drain: () => near.flush(),
       gone: (reason) => {
         near.closed = true;
-        this.close(joined, reason, near);
+        this.close(j, reason, near);
       },
     };
   }
@@ -438,67 +512,70 @@ export class PipeHub {
     const key = `${source}:${pipe}`;
     if (this.remote.has(key)) throw new Error(`pipe ${pipe} is open already`);
     let far: Far | undefined;
+    let joined: Joined | undefined;
     const near = new RemoteEnd(
       pipe,
       wire,
       budget,
       (data) => {
         if (!far) return false;
-        far.end.write(data);
-        return far.end.room;
+        return this.pass(joined, far.end, data);
       },
       sizesOf(target),
     );
-    far = await this.towards(node, target, (data) => {
-      near.write(data);
-      return near.room;
-    });
-    const joined = this.join(pipe, near, far.end, [key, ...far.keys]);
+    far = await this.towards(node, target, (data) => this.pass(joined, near, data));
+    joined = this.join(pipe, near, far.end, [key, ...far.keys], this.portOpts(target, far));
     this.remote.set(key, { end: near, joined });
     far.end.start?.();
     return far.file;
   }
 
-  /** The far end toward `node`: this node's loopback proxy or one of its files, or the link that leads there. */
+  /** A port's pipe is marked so, with the meter it tells: the host's share's when its far end is here, else this node's forward's. */
+  private portOpts(target: PipeTarget, far: Far): { port?: boolean; share?: string; meter?: PortMeter } {
+    if (target.kind !== "port") return {};
+    const meter = far.meter ?? this.deps.meter?.(target.share);
+    return { port: true, share: target.share, ...(meter ? { meter } : {}) };
+  }
+
+  /** The far end toward `node`: this node's loopback proxy, one of its files or a port it shared, or the link that leads there. */
   private async towards(node: string, target: PipeTarget, deliver: (data: Uint8Array) => boolean): Promise<Far> {
     if (node === this.deps.selfId() && target.kind === "file") {
       if (!this.deps.openFile) throw new Error("this node sends no files");
       const opened = await this.deps.openFile(target, deliver, (end, reason) => this.endClosed(end, reason));
       return { end: opened.end, keys: [], file: opened.file };
     }
-    if (node === this.deps.selfId()) {
-      const end = new TcpEnd();
-      const connect = this.deps.connect ?? Bun.connect;
-      const socket = await connect({
-        hostname: "127.0.0.1",
-        port: this.deps.loopbackPort(),
-        socket: {
-          data: (_s, data) => {
-            if (!deliver(new Uint8Array(data))) _s.pause();
-          },
-          drain: () => end.flush(),
-          close: () => this.endClosed(end, "the stream proxy closed"),
-          error: () => this.endClosed(end, "the stream proxy failed"),
-        },
-      });
-      end.attach(socket as Socket<unknown>);
-      return { end, keys: [] };
+    if (node === this.deps.selfId() && target.kind === "port") {
+      if (!this.deps.portOf) throw new Error("this node shares no ports");
+      const shared = this.deps.portOf(target.share, target.viewer ?? this.deps.selfId());
+      try {
+        const end = await this.loopback(shared.port, deliver, "the page's server");
+        return { end, keys: [], ...(shared.meter ? { meter: shared.meter } : {}) };
+      } catch (e) {
+        shared.meter?.done();
+        throw e;
+      }
     }
+    if (node === this.deps.selfId()) return { end: await this.loopback(this.deps.loopbackPort(), deliver, "the stream proxy"), keys: [] };
     const hop = this.deps.nextHop(node);
     const wire = hop ? this.deps.linkWire(hop) : undefined;
     if (!hop || !wire) throw new PipeRouteError(`no link toward ${node}`);
+    if (target.kind === "port") this.mustBeStraight(`link:${hop}`);
     const pipe = `p_${randomBytes(8).toString("hex")}`;
     const key = `link:${hop}:${pipe}`;
     const end = new RemoteEnd(pipe, wire, this.budget(`link:${hop}`), deliver, sizesOf(target));
     // filed before the far side answers: its first bytes can come with the answer
-    this.remote.set(key, { end, joined: { id: pipe, ends: [end, end], keys: [key], closed: false } });
+    this.remote.set(key, { end, joined: { id: pipe, ends: [end, end], keys: [key], closed: false, ...(target.kind === "port" ? { port: true } : {}) } });
     try {
       if (target.kind === "file") {
         if (!this.deps.openFileOnLink) throw new Error("this node carries no files");
         const a = await this.deps.openFileOnLink(hop, { node, pipe, path: target.path, ...(target.rel !== undefined ? { rel: target.rel } : {}), at: target.at });
         return { end, keys: [key], file: { size: a.size, mtimeMs: a.mtimeMs } };
       }
-      await this.deps.openOnLink(hop, { node, pipe });
+      if (target.kind === "port") {
+        if (!this.deps.openPortOnLink) throw new Error("this node carries no ports");
+        // the machine the pipe comes from: this one, unless the primary carries it on for another
+        await this.deps.openPortOnLink(hop, { node, pipe, share: target.share, viewer: target.viewer ?? this.deps.selfId() });
+      } else await this.deps.openOnLink(hop, { node, pipe });
     } catch (e) {
       this.remote.delete(key);
       throw e;
@@ -506,8 +583,40 @@ export class PipeHub {
     return { end, keys: [key] };
   }
 
-  private join(id: string, a: End, b: End, keys: string[]): Joined {
-    const joined: Joined = { id, ends: [a, b], keys, closed: false };
+  /**
+   * A connection to this machine's own loopback on `port`: the stream proxy's, or a port it
+   * shared, where 127.0.0.1 is tried first and [::1] when that is refused (a dev server that
+   * listens on `localhost` often binds IPv6 alone). Never another address.
+   */
+  private async loopback(port: number, deliver: (data: Uint8Array) => boolean, what: string): Promise<TcpEnd> {
+    const end = new TcpEnd();
+    const connect = this.deps.connect ?? Bun.connect;
+    const open = (hostname: string) =>
+      connect({
+        hostname,
+        port,
+        socket: {
+          data: (_s, data) => {
+            if (!deliver(new Uint8Array(data))) _s.pause();
+          },
+          drain: () => end.flush(),
+          close: () => this.endClosed(end, `${what} closed`),
+          error: () => this.endClosed(end, `${what} failed`),
+        },
+      });
+    let socket: Awaited<ReturnType<typeof connect>>;
+    try {
+      socket = await open("127.0.0.1");
+    } catch (e) {
+      if (!refused(e)) throw e;
+      socket = await open("::1");
+    }
+    end.attach(socket as Socket<unknown>);
+    return end;
+  }
+
+  private join(id: string, a: End, b: End, keys: string[], opts: { port?: boolean; share?: string; meter?: PortMeter } = {}): Joined {
+    const joined: Joined = { id, ends: [a, b], keys, closed: false, ...(opts.port ? { port: true } : {}), ...(opts.share !== undefined ? { share: opts.share } : {}), ...(opts.meter ? { meter: opts.meter } : {}) };
     for (const k of keys) {
       const r = this.remote.get(k);
       if (r) r.joined = joined;
@@ -537,12 +646,21 @@ export class PipeHub {
       if (end === from) continue;
       end.close(reason);
     }
+    joined.meter?.done();
   }
 
   // --- frames -----------------------------------------------------------------------------------
 
   data(source: string, pipe: string, data: string): void {
-    this.remote.get(`${source}:${pipe}`)?.end.received(data);
+    const r = this.remote.get(`${source}:${pipe}`);
+    if (!r) return;
+    // a port's bytes that came over the relay go no further
+    if (r.joined.port && !this.straightNow(r.joined)) {
+      r.end.close(RELAY_REFUSED);
+      this.close(r.joined, RELAY_REFUSED, r.end);
+      return;
+    }
+    r.end.received(data);
   }
 
   ack(source: string, pipe: string, bytes: number): void {
@@ -555,6 +673,36 @@ export class PipeHub {
     if (!r) return;
     r.end.gone();
     this.close(r.joined, reason, r.end);
+  }
+
+  /** A client or a link rides the relay now: every port's pipe through it closes, the streams' and the files' go on. */
+  offStraight(source: string): number {
+    let closed = 0;
+    for (const [k, r] of [...this.remote]) {
+      if (!k.startsWith(`${source}:`) || !r.joined.port) continue;
+      r.end.close(RELAY_REFUSED);
+      this.close(r.joined, RELAY_REFUSED, r.end);
+      closed++;
+    }
+    return closed;
+  }
+
+  /** A share ended, or the forward of it closed: every pipe to it here closes. */
+  closeShare(share: string, reason: string): number {
+    let closed = 0;
+    for (const j of [...this.pipes.values()]) {
+      if (j.share !== share) continue;
+      this.close(j, reason);
+      closed++;
+    }
+    return closed;
+  }
+
+  /** The port pipes open through this node now. */
+  get portCount(): number {
+    let n = 0;
+    for (const j of this.pipes.values()) if (j.port) n++;
+    return n;
   }
 
   /** A client or a link went: every pipe through it closes. */

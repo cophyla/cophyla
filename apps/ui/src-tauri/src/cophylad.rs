@@ -11,6 +11,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -251,6 +252,8 @@ pub struct Link {
     /// What the hello says of the app's audio: the host page's microphone and speaker, and the
     /// codecs its web view speaks, as it said them at attach; none until it has.
     audio: Mutex<Value>,
+    /// The host page opens web tabs (webtab.rs), as it said at attach: the hello says `webTabs`.
+    web_tabs: AtomicBool,
 }
 
 /// The hello's `audio` before the host page has said what it has: nothing, as before it could.
@@ -267,7 +270,14 @@ impl Link {
             snapshot: Mutex::new(LinkSnapshot { state: LinkState::Connecting, hello: None, since: now_ms(), error: None, url: String::new() }),
             reattach: Notify::new(),
             audio: Mutex::new(no_audio()),
+            web_tabs: AtomicBool::new(false),
         }
+    }
+
+    /// Whether the next hello says the host page opens web tabs: only where the shell has them,
+    /// on Windows.
+    pub fn set_web_tabs(&self, on: bool) {
+        self.web_tabs.store(on && cfg!(windows), Ordering::Relaxed);
     }
 
     /// The host page's audio for the next hello: `in` and `out` as booleans, `codecs` as the
@@ -500,6 +510,8 @@ pub async fn run_link<R: Runtime>(app: AppHandle<R>) {
             }
             Attempt::Dropped(reason) => {
                 link.set(&app, LinkState::Disconnected, None, Some(reason), &url);
+                // cophylad closes the web tabs of a host that goes, and so does the shell
+                crate::webtab::close_all(&app);
                 backoff = BACKOFF_MIN;
             }
             Attempt::Unreachable { refused, error } => {
@@ -572,6 +584,16 @@ fn on_frame<R: Runtime>(app: &AppHandle<R>, text: &str) {
     let _ = app.emit_to(HOST_LABEL, EVENT_FRAME, text);
 }
 
+/// The shell's hello: the token, the app's audio as the page said it, and `webTabs` where the
+/// page opens web tabs; nothing else the page said gets into it.
+fn hello_frame(token: &str, audio: Value, web_tabs: bool) -> Value {
+    let mut params = json!({ "token": token, "kind": "ui", "name": "desktop", "audio": audio });
+    if web_tabs {
+        params["webTabs"] = Value::Bool(true);
+    }
+    json!({ "jsonrpc": "2.0", "id": HELLO_ID, "method": "hello", "params": params })
+}
+
 async fn attempt<R: Runtime>(app: &AppHandle<R>, link: &Link, url: &str, token: &str, rx: &mut mpsc::Receiver<String>, install: Option<&Install>) -> Attempt {
     let connect = tokio::time::timeout(CONNECT_DEADLINE, tokio_tungstenite::connect_async(url)).await;
     let (mut ws, _) = match connect {
@@ -580,12 +602,7 @@ async fn attempt<R: Runtime>(app: &AppHandle<R>, link: &Link, url: &str, token: 
         Err(_) => return Attempt::Unanswered,
     };
 
-    let hello = json!({
-        "jsonrpc": "2.0",
-        "id": HELLO_ID,
-        "method": "hello",
-        "params": { "token": token, "kind": "ui", "name": "desktop", "audio": link.audio() },
-    });
+    let hello = hello_frame(token, link.audio(), link.web_tabs.load(Ordering::Relaxed));
     if let Err(e) = ws.send(Message::text(hello.to_string())).await {
         return Attempt::Unreachable { refused: false, error: format!("hello not sent: {e}") };
     }
@@ -709,6 +726,20 @@ mod tests {
         let checkout = resolve_command(&paths, None);
         assert!(checkout.program == "bun" || Path::new(&checkout.program).ends_with(Path::new(".bun").join("bin").join(BUN)), "{}", checkout.program);
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn the_hello_says_web_tabs_only_where_the_page_opens_them_on_windows() {
+        let link = Link::new();
+        link.set_audio(&json!({ "in": true, "out": true, "asked": true, "webTabs": true }));
+        let plain = hello_frame("t", link.audio(), link.web_tabs.load(Ordering::Relaxed));
+        assert_eq!(plain["params"], json!({ "token": "t", "kind": "ui", "name": "desktop", "audio": { "in": true, "out": true, "asked": true } }));
+        link.set_web_tabs(true);
+        let tabs = hello_frame("t", link.audio(), link.web_tabs.load(Ordering::Relaxed));
+        assert_eq!(tabs["params"].get("webTabs"), cfg!(windows).then_some(&Value::Bool(true)));
+        assert_eq!(tabs["method"], "hello");
+        link.set_web_tabs(false);
+        assert!(hello_frame("t", link.audio(), link.web_tabs.load(Ordering::Relaxed))["params"].get("webTabs").is_none());
     }
 
     #[test]

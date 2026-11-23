@@ -14,7 +14,9 @@
 // `remote.pair`, a secondary's viewer asking a desktop's owner to accept its PIN,
 // `agent.list`, `agent.send` and `file.send`, a secondary's sessions reaching the agent router
 // here (agentmsg), and `files.tree` and `files.pipe.open`, a transfer pulling from this
-// machine or another (transfers.ts); a backup gets the replication stream. A link that closes
+// machine or another (transfers.ts), and `port.share`, `port.unshare` and `port.pipe.open`, a
+// device of the user's opening a machine's localhost (ports.ts); a backup gets the replication
+// stream. A link that closes
 // marks the node offline, ends its mirrored sessions and terminals and cancels its mirrored
 // asks for every client, and raises `node.left`; its transfers show waiting until it is back.
 //
@@ -62,6 +64,8 @@ import type { AgentMessages } from "../agentmsg/index.ts";
 import { TerminalViews } from "./terminals.ts";
 import { FILE_LINK_REQUESTS } from "./transfers.ts";
 import type { TransferLinks } from "./transfers.ts";
+import { PORT_LINK_REQUESTS } from "./ports.ts";
+import type { PortLinks } from "./ports.ts";
 
 type NodeLinkResult<N extends keyof typeof nodeLinkRequests> = z.infer<(typeof nodeLinkRequests)[N]["result"]>;
 
@@ -134,6 +138,10 @@ export interface InboundDeps {
   agents?: () => Pick<AgentMessages, "upwardRequest"> | undefined;
   /** Transfers: what a path holds and a file's pipe, served here or carried on. */
   transfers?: TransferLinks;
+  /** Ports: a share of a machine's port, its end and its pipes, served here or carried on. */
+  ports?: PortLinks;
+  /** A relayed link's frames moved back from its data channel onto the relay. */
+  onRelay?: (node: string) => void;
   /** Files of other people's a secondary's transfer reads through this primary. */
   peerFiles?: () => PeerFileServe | undefined;
   now?: () => number;
@@ -434,7 +442,10 @@ export class Inbound {
         deliver: (text) => rpc.onText(text),
         close: (code, reason) => sock.close(code, reason),
         log: this.log.child("switch"),
-        onMode: (mode) => linkDirect?.modeChanged(mode),
+        onMode: (mode) => {
+          linkDirect?.modeChanged(mode);
+          if (mode === "relay" && peer) this.deps.onRelay?.(peer.id);
+        },
       });
     }
     const timer = setTimeout(() => {
@@ -640,6 +651,7 @@ export class Inbound {
     this.linkDirects.get(peer.id)?.stop();
     this.linkDirects.delete(peer.id);
     this.deps.streams?.gone(peer.id);
+    this.deps.ports?.gone(peer.id, false);
     this.deps.policy.forgetSession(peer.info.linkId);
     this.deps.replicator.detach(peer.id);
     for (const [key, clientId] of [...this.relayed]) {
@@ -783,6 +795,10 @@ export class Inbound {
           // a hands node pulls only what the primary sent it (transfers.ts)
           if (!this.deps.transfers) throw new RpcError("unsupported", `${method} is not served here`);
           return this.deps.transfers.request({ id: peer.id, sessionKey: peer.info.linkId, ...(peer.info.hands ? { hands: true } : {}) }, method, params);
+        }
+        if (this.deps.ports && PORT_LINK_REQUESTS.has(method)) {
+          // a hands node opens no port on another machine (ports.ts)
+          return this.deps.ports.request({ id: peer.id, sessionKey: peer.info.linkId, ...(peer.info.hands ? { hands: true } : {}) }, method, params, (ask) => void peer.notify("pending", { id, ask, at: this.now() }));
         }
         throw new RpcError("unsupported", `${method} is not served upward`);
       }

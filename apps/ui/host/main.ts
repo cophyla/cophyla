@@ -4,7 +4,9 @@
 // is up it says where the link is, in one line; after that it renders nothing of its own:
 // the view is the product, and shows the link itself. A staged update is the tray's. Another
 // node's desktop opens, through `host.open`, in a window of its own or beside the view, laid
-// over the frame where the view places it (open.ts); a link clicked in a view (`host.openLink`) opens in the system browser. Where the files a
+// over the frame where the view places it (open.ts); so does a web tab beside an agent's chat,
+// which cophylad asks this app to open on Windows and the agent's Playwright drives
+// (webtabs.ts, `host.webtab`); a link clicked in a view (`host.openLink`) opens in the system browser. Where the files a
 // view had dropped on it from the desktop are (`host.filePaths`) the shell says, from the drop
 // it saw pass into the page (dropped.rs); on Windows the view asks WebView2 for them instead.
 // Voice is voice.ts: the microphone, the wake words, the talk key and the speaker, and its
@@ -20,6 +22,8 @@ import { AskNotifier, checkWords, Connection, MentionNotifier, NoteNotifier, Sna
 import type { Activated, LinkSnapshot, TauriIo } from "@cophyla/viewhost";
 import { StreamWindows } from "./open.ts";
 import { DesktopVoice } from "./voice.ts";
+import { WebTabs, webTabsHere } from "./webtabs.ts";
+import type { ShellState } from "./webtabs.ts";
 
 const io: TauriIo = {
   invoke: (cmd, args) => invoke(cmd, args),
@@ -56,6 +60,17 @@ const streams = new StreamWindows({
   onClosed: (stream) => viewhost.streamClosed(stream),
   log: (m) => console.warn(m),
 });
+// The web tabs beside agents' chats: on Windows, where the shell opens them.
+const webTabsOn = webTabsHere();
+const webTabs = new WebTabs({
+  invoke: io.invoke,
+  request: (method, params) => conn.request(method, params),
+  // a tab is placed in the frame's coordinates, as a stream is
+  frame: () => viewEl.querySelector("iframe")?.getBoundingClientRect(),
+  log: (m) => console.warn(m),
+});
+/** The host's own requests a view may make: a web tab's, and the streams'. */
+const hostRequests = (method: string, params: unknown): Promise<unknown> => (method === "host.webtab" ? webTabs.host(method, params) : streams.host(method, params));
 // Check for updates, from the tray and the settings' Updates page: what the node found comes
 // back as a notification (no buttons; a click shows the window), and so does a release it found
 // that finished downloading.
@@ -78,11 +93,19 @@ const viewhost = new ViewHost({
   conn,
   cache,
   container: viewEl,
-  host: streams.host,
+  host: hostRequests,
   // a stream's page laid over the view: hidden under the host's own layers, gone with the view's document
   embed: true,
-  onOverlay: (open) => streams.overlay(open),
-  onUnmount: () => streams.unmounted(),
+  // a web tab laid over it likewise, hidden under the host's layers and until the next document places it
+  ...(webTabsOn ? { webTabs: true } : {}),
+  onOverlay: (open) => {
+    streams.overlay(open);
+    webTabs.overlay(open);
+  },
+  onUnmount: () => {
+    streams.unmounted();
+    webTabs.unmounted();
+  },
   updates,
   openLink: (url) => io.invoke<void>("open_link", { url }),
   // With no names on Linux, whose web view shows a page no dropped file (dropped.rs).
@@ -183,6 +206,7 @@ conn.onFrame((frame) => {
     mentions.onNotification(frame);
     notes.onNotification(frame);
     updates.onNotification(frame);
+    if (webTabsOn) webTabs.onNotification(frame);
     if (frame.method === "session.state") renderTitle();
     if (frame.method === "view.changed") viewhost.onChanged((frame.params as { id: string }).id);
   }
@@ -207,6 +231,11 @@ conn.onState((s) => {
   }
   voice.linkChanged(s);
   if (s.state === "disconnected" || s.state === "unauthorized") streams.linkLost();
+  // the tabs go with the client cophylad opened them for, and a new one reads them again
+  if (webTabsOn) {
+    if (s.state !== "connected") webTabs.linkLost();
+    else if (s.hello) void webTabs.welcome();
+  }
   renderStatus(s);
   renderTitle();
   if (s.state === "connected" && !loaded) {
@@ -233,6 +262,11 @@ void io.listen<{ id: string }>("toast:opened", (e) => {
   if (at) viewhost.reveal(at);
 });
 void io.listen<{ stream: string }>("stream:closed", (e) => streams.closed(e.stream));
+if (webTabsOn) {
+  void io.listen<ShellState>("webtab:state", (e) => webTabs.shellState(e));
+  void io.listen<{ tab: string; url: string }>("webtab:newwindow", (e) => webTabs.newWindow(e));
+  void io.listen<{ tab: string }>("webtab:closed", (e) => webTabs.shellClosed(e));
+}
 // The tray's Check for updates: the node reads the feed now, and what it found is told.
 void io.listen("tray:check-updates", () => {
   void updates.check().then((o) => {
@@ -255,10 +289,11 @@ Object.assign(window, {
   },
 });
 
-// The hello says what the page has for audio, so the link attaches once WebCodecs has answered.
+// The hello says what the page has for audio, so the link attaches once WebCodecs has answered,
+// and that the page opens web tabs, where it does.
 void voice
   .helloAudio()
-  .then((audio) => conn.attach({ audio }))
+  .then((audio) => conn.attach({ audio, ...(webTabsOn ? { webTabs: true } : {}) }))
   .then((s) => renderStatus(s))
   .catch((e) => note(`attach: ${e instanceof Error ? e.message : String(e)}`));
 void voice.start().catch((e: unknown) => console.warn("voice", e));

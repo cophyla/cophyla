@@ -3,7 +3,8 @@
 // registration replayed until acknowledged, answers queued for the link and dropped when
 // stale) and local view staging (files per version, the policy in the entry once, pruning,
 // and a version written whole not fetched again); and the remote desktop in the app (where
-// `host.open` sends what the view handed it, and a stream's lifetime around the plugin).
+// `host.open` sends what the view handed it, and a stream's lifetime around the plugin), and
+// a port's page beside it (its plan, its pipes to the share, and `port.close` when it goes).
 
 import { describe, expect, test } from "bun:test";
 import type { ViewContent, ViewManifest } from "@cophyla/protocol";
@@ -16,6 +17,7 @@ import type { FsLike } from "../src/native/stage.ts";
 import { parseAddress } from "../src/pairing.ts";
 import type { Credential } from "../src/pairing.ts";
 import { AWAY_MESSAGE, PipeBridge, planOpen, Streams } from "../src/native/stream.ts";
+import { Ports } from "../src/native/ports.ts";
 import type { OpenPlan, CophylaStreamPlugin, PlanContext, StreamClosed } from "../src/native/stream.ts";
 
 // --- the socket plugin, played ---------------------------------------------------------------
@@ -326,6 +328,27 @@ describe("planOpen", () => {
   ];
   for (const [name, params, ctx, want] of cases) test(name, () => expect(planOpen(params, { ...onLan, ...ctx })).toEqual(want));
 
+  describe("a port of one of the user's machines", () => {
+    const port = { id: "prt_01ARZ3NDEKTSV4RRFFQ69G5FP1", node: "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", port: 3000, share: "prt_01ARZ3NDEKTSV4RRFFQ69G5FP1", name: " Desk " };
+    const refused: OpenPlan = { kind: "refuse", reason: "that page cannot be opened" };
+    const portCases: [string, unknown, Partial<PlanContext>, OpenPlan][] = [
+      ["its page in the port dialog, wherever the link runs", { port }, { via: "relay" }, { kind: "port", id: port.id, node: port.node, port: 3000, share: port.share, name: "Desk" }],
+      ["without a name: the bar says the port alone", { port: { ...port, name: undefined } }, {}, { kind: "port", id: port.id, node: port.node, port: 3000, share: port.share, name: "" }],
+      ["a shell without the plugin", { port }, { canForward: false }, { kind: "refuse", reason: "this app cannot open another machine's pages" }],
+      ["no share", { port: { ...port, share: undefined } }, {}, refused],
+      ["a share that is not a port's", { port: { ...port, share: "p_7" } }, {}, refused],
+      ["an id that is not a port's", { port: { ...port, id: "stream_1" } }, {}, refused],
+      ["a node that is not one", { port: { ...port, node: "../node" } }, {}, refused],
+      ["port 0", { port: { ...port, port: 0 } }, {}, refused],
+      ["a port past 65535", { port: { ...port, port: 65536 } }, {}, refused],
+      ["a port that is not a whole number", { port: { ...port, port: 80.5 } }, {}, refused],
+      ["a port as text", { port: { ...port, port: "3000" } }, {}, refused],
+      ["a name past 100 characters", { port: { ...port, name: "x".repeat(101) } }, {}, refused],
+      ["nothing in it", { port: null }, {}, refused],
+    ];
+    for (const [name, params, ctx, want] of portCases) test(name, () => expect(planOpen(params, { ...onLan, ...ctx })).toEqual(want));
+  });
+
   test("what can never be opened throws, as host.open did", () => {
     expect(() => planOpen({ url: "javascript:alert(1)" }, onLan)).toThrow("that link cannot be opened");
     expect(() => planOpen({}, onLan)).toThrow("host.open needs a url");
@@ -333,6 +356,7 @@ describe("planOpen", () => {
 });
 
 type OpenOptions = Parameters<CophylaStreamPlugin["open"]>[0];
+type PortOptions = Parameters<CophylaStreamPlugin["openPort"]>[0];
 
 class FakeStreamPlugin implements CophylaStreamPlugin {
   readonly opened: OpenOptions[] = [];
@@ -350,6 +374,17 @@ class FakeStreamPlugin implements CophylaStreamPlugin {
   async close(options: { stream: string }): Promise<void> {
     this.closes.push(options.stream);
     this.emit({ stream: options.stream, reason: "closed" });
+  }
+  readonly portsOpened: PortOptions[] = [];
+  readonly portCloses: string[] = [];
+  async openPort(options: PortOptions): Promise<{ local: number }> {
+    this.portsOpened.push(options);
+    if (this.fail) throw new Error(this.fail);
+    return { local: options.port };
+  }
+  async closePort(options: { id: string }): Promise<void> {
+    this.portCloses.push(options.id);
+    this.fire("portClosed", { id: options.id, reason: "closed" });
   }
   async addListener(event: string, fn: (e: never) => void): Promise<{ remove(): Promise<void> }> {
     const set = this.listeners.get(event) ?? new Set();
@@ -524,5 +559,116 @@ describe("a link stream's pipes", () => {
     plugin.fire("pipe", { stream: "stream_9", conn: "k3" });
     await settle();
     expect(plugin.calls.at(-1)).toEqual(["pipeFailed", { conn: "k3" }]);
+  });
+});
+
+describe("a port's page", () => {
+  const plan = { kind: "port" as const, id: "prt_01ARZ3NDEKTSV4RRFFQ69G5FP1", node: "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", port: 3000, share: "prt_01ARZ3NDEKTSV4RRFFQ69G5FP1", name: "Desk" };
+  const second = { ...plan, id: "prt_01ARZ3NDEKTSV4RRFFQ69G5FP2", share: "prt_01ARZ3NDEKTSV4RRFFQ69G5FP2", port: 5173 };
+  const settle = () => new Promise((r) => setTimeout(r, 0));
+
+  function harness() {
+    const plugin = new FakeStreamPlugin();
+    const requests: [string, unknown][] = [];
+    const signals: [string, unknown][] = [];
+    const hear: ((method: string, params: unknown) => void)[] = [];
+    let n = 0;
+    const link = {
+      open: async (node: string, share?: string) => {
+        requests.push(["remote.pipe.open", { node, ...(share !== undefined ? { share } : {}) }]);
+        return { pipe: `p_${++n}`, window: 262_144 };
+      },
+      signal: (method: string, params: unknown) => void signals.push([method, params]),
+      onPipe: (fn: (method: string, params: unknown) => void) => {
+        hear.push(fn);
+        return () => undefined;
+      },
+    };
+    // the stream's bridge and the page's share the plugin and the link, as in the app
+    const streamPipes = new PipeBridge({ plugin, link });
+    const pipes = new PipeBridge({ plugin, link, kind: "port" });
+    const request = async (method: string, params: unknown) => void requests.push([method, params]);
+    const ports = new Ports({ plugin, request, pipes });
+    const streams = new Streams({ plugin, request, watching: () => undefined, pipes: streamPipes });
+    const fromNode = (method: string, params: unknown) => hear.forEach((fn) => fn(method, params));
+    return { plugin, requests, signals, pipes, streamPipes, ports, streams, fromNode };
+  }
+
+  test("shown: the plugin opens it; its connections are pipes to the share, bytes both ways; closed by the user, the node is told once", async () => {
+    const { plugin, requests, signals, pipes, ports, fromNode } = harness();
+    expect(await ports.show(plan)).toEqual({ local: 3000 });
+    expect(plugin.portsOpened).toEqual([{ id: plan.id, node: plan.node, share: plan.share, port: 3000, name: "Desk" }]);
+    expect(ports.open).toBe(plan.id);
+    plugin.fire("portPipe", { port: plan.id, conn: "q1" });
+    await settle();
+    expect(requests).toEqual([["remote.pipe.open", { node: plan.node, share: plan.share }]]);
+    expect(plugin.calls).toEqual([["pipeOpened", { conn: "q1", window: 262_144 }]]);
+    plugin.fire("pipeData", { conn: "q1", data: "R0VU" });
+    fromNode("remote.pipe.data", { pipe: "p_1", data: "SFRUUA==" });
+    plugin.fire("written", { conn: "q1", bytes: 4 });
+    await settle();
+    expect(signals).toEqual([
+      ["remote.pipe.data", { pipe: "p_1", data: "R0VU" }],
+      ["remote.pipe.ack", { pipe: "p_1", bytes: 4 }],
+    ]);
+    expect(plugin.calls.at(-1)).toEqual(["pipeWrite", { conn: "q1", data: "SFRUUA==" }]);
+    // a connection of a page that is not this one gets no pipe
+    plugin.fire("portPipe", { port: second.id, conn: "q2" });
+    await settle();
+    expect(plugin.calls.at(-1)).toEqual(["pipeFailed", { conn: "q2" }]);
+    expect(pipes.count).toBe(1);
+    plugin.fire("portClosed", { id: plan.id, reason: "closed" });
+    plugin.fire("portClosed", { id: plan.id, reason: "closed" });
+    expect(ports.open).toBeUndefined();
+    expect(signals.at(-1)).toEqual(["remote.pipe.close", { pipe: "p_1", reason: "the page closed" }]);
+    expect(requests.filter(([m]) => m === "port.close")).toEqual([["port.close", { id: plan.id }]]);
+    expect(pipes.count).toBe(0);
+  });
+
+  test("another page closes the first, and the node hears of it; the app closing it does too", async () => {
+    const { plugin, requests, ports } = harness();
+    await ports.show(plan);
+    await ports.show(second);
+    expect(plugin.portCloses).toEqual([plan.id]);
+    expect(ports.open).toBe(second.id);
+    await ports.close();
+    expect(plugin.portCloses).toEqual([plan.id, second.id]);
+    expect(requests).toEqual([
+      ["port.close", { id: plan.id }],
+      ["port.close", { id: second.id }],
+    ]);
+    await ports.close();
+    expect(requests).toHaveLength(2);
+  });
+
+  test("a page that cannot open closes on the node too", async () => {
+    const { plugin, requests, ports } = harness();
+    plugin.fail = "no loopback port for the page";
+    await expect(ports.show(plan)).rejects.toThrow("no loopback port for the page");
+    expect(ports.open).toBeUndefined();
+    expect(requests).toEqual([["port.close", { id: plan.id }]]);
+  });
+
+  test("a stream and a page at once: each bridge carries its own connections and pipes alone", async () => {
+    const { plugin, requests, signals, pipes, streamPipes, ports, streams, fromNode } = harness();
+    await ports.show(plan);
+    await streams.show({ kind: "link", node: "node_b", path: "/remote/?t=abc", stream: "stream_9" });
+    plugin.fire("pipe", { stream: "stream_9", conn: "k1" });
+    plugin.fire("portPipe", { port: plan.id, conn: "q1" });
+    await settle();
+    expect(requests).toEqual([
+      ["remote.pipe.open", { node: "node_b" }],
+      ["remote.pipe.open", { node: plan.node, share: plan.share }],
+    ]);
+    expect([streamPipes.count, pipes.count]).toEqual([1, 1]);
+    fromNode("remote.pipe.data", { pipe: "p_2", data: "eA==" });
+    plugin.fire("pipeData", { conn: "k1", data: "eQ==" });
+    await settle();
+    expect(plugin.calls.filter(([m]) => m === "pipeWrite")).toEqual([["pipeWrite", { conn: "q1", data: "eA==" }]]);
+    expect(signals).toEqual([["remote.pipe.data", { pipe: "p_1", data: "eQ==" }]]);
+    // the stream closing leaves the page's pipe open
+    await streams.close();
+    expect(signals.at(-1)).toEqual(["remote.pipe.close", { pipe: "p_1", reason: "the stream closed" }]);
+    expect([streamPipes.count, pipes.count]).toEqual([0, 1]);
   });
 });

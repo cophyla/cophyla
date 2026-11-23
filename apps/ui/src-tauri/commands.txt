@@ -13,5 +13,9 @@ stream_open
 stream_embed
 stream_place
 stream_close
+webtab_open
+webtab_place
+webtab_go
+webtab_close
 open_link
 ptt_shortcut

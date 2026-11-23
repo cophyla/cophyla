@@ -7,6 +7,14 @@
 // carries: a `pipe` event asks it for one, `pipeData` hands it what the web view sent,
 // `written` what reached the web view, `pipeEnd` a connection closed here; `pipeOpened`,
 // `pipeFailed`, `pipeWrite`, `pipeAck` and `pipeClose` are its side.
+//
+// A port of one of the user's machines shows the same way, beside it: `openPort` starts a
+// port forwarder on loopback and shows the machine's page in its dialog, answering the port it
+// listens on here; `closePort` ends it; `portClosed` says every way one ends. One page shows
+// at a time. Its connections are always pipes: `portPipe` asks the page for one, and the rest
+// of the pipe events and calls above serve them too, since a page's connections are named
+// apart from a stream's (`q…`, a stream's `k…`). A TLS server's answer is not handed to the
+// page: the dialog says HTTPS pages do not open here yet.
 package com.fareaststudios.cophyla
 
 import android.util.Base64
@@ -26,6 +34,18 @@ class CophylaStreamPlugin : Plugin() {
     /** The link backend of the stream showing, for the pipe calls, which come on the plugin's threads. */
     @Volatile
     private var pipes: PipeBackend? = null
+
+    private class Port(val id: String, val forwarder: PortForwarder, val dialog: PortDialog, val pipes: PipeBackend)
+
+    /** The port's page on the screen; touched on the main thread only. */
+    private var port: Port? = null
+
+    /** The backend of the page showing, for the pipe calls of its connections. */
+    @Volatile
+    private var portPipes: PipeBackend? = null
+
+    /** The backend a connection is of: a page's or the stream's, by how its id starts. */
+    private fun backendOf(conn: String): PipeBackend? = if (conn.startsWith(PORT_CONN)) portPipes else pipes
 
     @PluginMethod
     fun open(call: PluginCall) {
@@ -104,13 +124,13 @@ class CophylaStreamPlugin : Plugin() {
     fun pipeOpened(call: PluginCall) {
         val conn = call.getString("conn") ?: return call.reject("conn required")
         val window = call.getInt("window")?.takeIf { it > 0 } ?: return call.reject("window required")
-        call.resolve(JSObject().put("open", pipes?.opened(conn, window) ?: false))
+        call.resolve(JSObject().put("open", backendOf(conn)?.opened(conn, window) ?: false))
     }
 
     @PluginMethod
     fun pipeFailed(call: PluginCall) {
         val conn = call.getString("conn") ?: return call.reject("conn required")
-        pipes?.failed(conn)
+        backendOf(conn)?.failed(conn)
         call.resolve()
     }
 
@@ -123,7 +143,7 @@ class CophylaStreamPlugin : Plugin() {
         } catch (e: IllegalArgumentException) {
             return call.reject("data is not base64")
         }
-        pipes?.write(conn, bytes)
+        backendOf(conn)?.write(conn, bytes)
         call.resolve()
     }
 
@@ -131,15 +151,96 @@ class CophylaStreamPlugin : Plugin() {
     fun pipeAck(call: PluginCall) {
         val conn = call.getString("conn") ?: return call.reject("conn required")
         val bytes = call.getInt("bytes")?.takeIf { it > 0 } ?: return call.reject("bytes required")
-        pipes?.ack(conn, bytes)
+        backendOf(conn)?.ack(conn, bytes)
         call.resolve()
     }
 
     @PluginMethod
     fun pipeClose(call: PluginCall) {
         val conn = call.getString("conn") ?: return call.reject("conn required")
-        pipes?.close(conn)
+        backendOf(conn)?.close(conn)
         call.resolve()
+    }
+
+    // --- a port's page ----------------------------------------------------------------------------
+
+    @PluginMethod
+    fun openPort(call: PluginCall) {
+        val id = call.getString("id")?.takeIf { PORT_ID.matches(it) } ?: return call.reject("id required")
+        val number = call.getInt("port")?.takeIf { it in 1..65535 } ?: return call.reject("port required")
+        val name = (call.getString("name") ?: "").trim().take(NAME_MAX)
+        val backend = PipeBackend(portEvents(id), prefix = PORT_CONN, firstDown = { bytes ->
+            val tls = PortForwarder.looksLikeTls(bytes)
+            if (tls) activity.runOnUiThread { port?.takeIf { it.id == id }?.dialog?.notice(HTTPS_REFUSED) }
+            !tls
+        })
+        val forwarder = try {
+            PortForwarder(number, id, backend)
+        } catch (e: Exception) {
+            return call.reject("no loopback port for the page: ${e.message}")
+        }
+        activity.runOnUiThread {
+            port?.let { endPort(it.id, "replaced") }
+            portPipes = backend
+            forwarder.start()
+            val dialog = PortDialog(activity, forwarder.port, number, name, forwarder.cookieName, forwarder.secret) { reason -> portClosed(id, reason) }
+            port = Port(id, forwarder, dialog, backend)
+            dialog.show()
+            call.resolve(JSObject().put("local", forwarder.port))
+        }
+    }
+
+    private fun portEvents(id: String) = object : PipeBackend.Events {
+        override fun connection(conn: String) {
+            notifyListeners("portPipe", JSObject().put("port", id).put("conn", conn))
+        }
+
+        override fun data(conn: String, bytes: ByteArray) {
+            notifyListeners("pipeData", JSObject().put("conn", conn).put("data", Base64.encodeToString(bytes, Base64.NO_WRAP)))
+        }
+
+        override fun written(conn: String, bytes: Int) {
+            notifyListeners("written", JSObject().put("conn", conn).put("bytes", bytes))
+        }
+
+        override fun ended(conn: String, reason: String) {
+            notifyListeners("pipeEnd", JSObject().put("conn", conn).put("reason", reason))
+        }
+    }
+
+    @PluginMethod
+    fun closePort(call: PluginCall) {
+        val id = call.getString("id") ?: return call.reject("id required")
+        activity.runOnUiThread {
+            endPort(id, "closed")
+            call.resolve()
+        }
+    }
+
+    /** Ends the page of `id` if it is the one showing; `portClosed` follows from the dialog's dismissal. */
+    private fun endPort(id: String, reason: String) {
+        val p = port ?: return
+        if (p.id != id) return
+        port = null
+        releasePort(p)
+        p.dialog.reason = reason
+        p.dialog.dismiss()
+    }
+
+    /** The dialog is gone, by `endPort` or by its own "×" or Back. */
+    private fun portClosed(id: String, reason: String) {
+        val p = port
+        if (p != null && p.id == id) {
+            port = null
+            releasePort(p)
+        }
+        notifyListeners("portClosed", JSObject().put("id", id).put("reason", reason))
+    }
+
+    private fun releasePort(p: Port) {
+        p.forwarder.close()
+        p.pipes.closeAll()
+        if (portPipes === p.pipes) portPipes = null
     }
 
     // --- ends -------------------------------------------------------------------------------------
@@ -176,5 +277,18 @@ class CophylaStreamPlugin : Plugin() {
             it.dialog.dismiss()
         }
         current = null
+        port?.let {
+            releasePort(it)
+            it.dialog.dismiss()
+        }
+        port = null
+    }
+
+    companion object {
+        /** What a port's page's connections are named by: never a stream's. */
+        const val PORT_CONN = "q"
+        private const val NAME_MAX = 100
+        private val PORT_ID = Regex("^prt_[0-7][0-9A-HJKMNP-TV-Z]{25}$")
+        const val HTTPS_REFUSED = "HTTPS dev servers don't open on the phone yet"
     }
 }

@@ -62,7 +62,7 @@
 // `grant.list`, asked again after anything that changes them and every few seconds while an
 // invite is on show or still open, since no notification says one was used.
 
-import type { AssistantState, BrowserInvite, ClientResult, Connection, ContentBlock, Controller, FolderPick, GitState, Grant, GrantRole, HarnessProfile, InviteOffer, LanState, Message, MetricsSample, Node as CophylaNode, RemoteState, ClientSession as Session, SessionEvent, SpendTotals, Task, Terminal, ClientThread as Thread, Transfer, TransferConfirm, TurnProgress, VoiceState, VoiceStopped, VoiceUnheard, ClientWorkspace as Workspace } from "@cophyla/protocol";
+import type { AssistantState, BrowserInvite, ClientResult, WebTab, Connection, ContentBlock, Controller, FolderPick, GitState, Grant, GrantRole, HarnessProfile, InviteOffer, LanState, Message, MetricsSample, Node as CophylaNode, RemoteState, ClientSession as Session, SessionEvent, SpendTotals, Task, Terminal, ClientThread as Thread, Transfer, TransferConfirm, TurnProgress, VoiceState, VoiceStopped, VoiceUnheard, ClientWorkspace as Workspace } from "@cophyla/protocol";
 import { CHAT_PAGE, answerParams, apply, connectionFailure, browserInviteParams, chatDraw, connectEmbeds, widerChatDraw, connectWords, REMOTE_VIEW_WIDTH, remoteHere, remoteViewStep, remoteViewWidth, tabNode, shareWords, dropText, dropTexts, enterSends, explorerKey, fileHome, filesErrorWords, HISTORY_PAGE, initialState, joinAsksDoor, joinPath, joinPaths, listedKind, historyPage, nodeGrant, nodeInviteParams, openFolders, paneMode, parseComposer, phoneInviteParams, tabChoice, spawnParams, folderPlace, lastPlace, quickPlace, relativeFile, relUnder, dialogNative, dialogPanelFor, dialogTerminal, dockAsks, sessionTerminal, sourceRoot, spendFrom, stepScale, underListedFolder, VIEWER_WIDTH, viewedPath, viewerTab, viewerWidth, untilTomorrow, VOICE_NOTE_MS, voiceCancellable, watchParams, countdownFrom } from "./model.ts";
 import { selectUpdateNote, selectSpend, costWords, tokenWords, limitWords, profilesStale } from "./model.ts";
 import { downloadsIn, machineName, transferEnded } from "./model.ts";
@@ -84,6 +84,8 @@ import type { DialogPress } from "./model.ts";
 import type { ViewerTarget } from "./fileview.ts";
 import { RemotePanel } from "./remoteview.ts";
 import type { RemoteCover } from "./remoteview.ts";
+import { WebPanel } from "./webtabview.ts";
+import { activeTab, foldWebTab, resetWebTabs, sessionTabs, webShown, webTabsUi } from "./webtabmodel.ts";
 import { HostRpc, ViewRpcError } from "./rpc.ts";
 import { copyText, TerminalView } from "./terminal.ts";
 import { Waves } from "./waves.ts";
@@ -101,6 +103,8 @@ import { TrackControl } from "./trackctl.ts";
 import { newTrackUi } from "./trackview.ts";
 import { NoteControl } from "./notectl.ts";
 import { newNoteUi } from "./noteview.ts";
+import { PortsControl } from "./portctl.ts";
+import { newPortsUi } from "./portmodel.ts";
 import { paintListens } from "./listen.ts";
 import { ListenControl, newListenUi } from "./listenctl.ts";
 
@@ -116,6 +120,8 @@ const ui: UiState = {
   sharing: new Map(),
   remoteDock: "beside",
   remoteWidth: REMOTE_VIEW_WIDTH.usual,
+  web: webTabsUi(),
+  webWidth: REMOTE_VIEW_WIDTH.usual,
   modes: new Map(),
   dialogModes: new Map(),
   fit: false,
@@ -138,6 +144,7 @@ const ui: UiState = {
   talk: newTalkUi(),
   track: newTrackUi(),
   notes: newNoteUi(),
+  ports: newPortsUi(),
   listen: newListenUi(),
 };
 // A group chat's pane, beside the sessions' in the panes, and New group's form or Teammates
@@ -216,6 +223,7 @@ const notes = new NoteControl({
   showAt: (session, seq) => void showAt(session, seq),
 });
 const listen = new ListenControl({ rpc, state, ui, draw: () => draw(), fail: (what, e) => fail(what, e) });
+const ports = new PortsControl({ rpc, state, ui, dispatch: (action) => dispatch(action), draw: () => draw() });
 const terminal = new TerminalView(rpc, () => draw(), { canOpen: (path) => withWritten(terminalWritten(), (at) => canOpenPath(path, at)) ?? false, open: (path) => withWritten(terminalWritten(), (at) => openPath(path, at)), spell: (path) => withWritten(terminalWritten(), (at) => spellPath(path, at)) ?? Promise.resolve(undefined) });
 // The dialog a session's terminal shows, drawn in its chat where the user answers it (`syncDialog`).
 const dialog = new TerminalView(rpc, () => draw(), { canOpen: (path) => withWritten(dialogWritten(), (at) => canOpenPath(path, at)) ?? false, open: (path) => withWritten(dialogWritten(), (at) => openPath(path, at)), spell: (path) => withWritten(dialogWritten(), (at) => spellPath(path, at)) ?? Promise.resolve(undefined) });
@@ -234,6 +242,24 @@ const remotePanel = new RemotePanel({
   place: (stream, rect) => rpc.request("host.place", { stream, rect }),
   cover: () => remoteCover(),
 });
+/** A session's web tabs beside the pane, or over it, whose pages the host lays over the view where the panel says. */
+const webPanel = new WebPanel({
+  host: (params) => rpc.request("host.webtab", params),
+  open: (session, url) => void openWebTab(session, url),
+  close: (tab) => {
+    void rpc.request("webtab.close", { id: tab.id }).catch((e: unknown) => fail("The tab did not close", e));
+  },
+  choose: (tab) => {
+    ui.web.active.set(tab.session, tab.id);
+    draw();
+  },
+  putAway: (session) => {
+    ui.web.away.add(session);
+    draw();
+  },
+  cover: () => remoteCover(),
+  fail: (words) => dispatch({ type: "error", message: words }),
+});
 /** The microphone's wave, just over the input, while the host records. */
 const waves = new Waves();
 roots.composer.before(waves.el);
@@ -250,6 +276,7 @@ function draw(opts: RenderOptions = {}): void {
   syncViewer();
   syncContext();
   syncRemote();
+  syncWeb();
   revealListed();
   team.afterDraw();
   talks.afterDraw();
@@ -522,6 +549,7 @@ rpc.onNotification((n) => {
         talks.connected();
         track.connected();
         notes.connected();
+        void loadWebTabs();
         // The node forgot the watch with the line, or holds one from a view this frame
         // replaced: the tab shown opens afresh, and the watch is said again.
         openTab();
@@ -539,6 +567,7 @@ rpc.onNotification((n) => {
         watched.clear();
         ui.opening.clear();
         ui.newTerminal = undefined;
+        ports.disconnected();
         team.disconnected();
         talks.disconnected();
         activeAt = 0;
@@ -559,6 +588,9 @@ rpc.onNotification((n) => {
       return;
     case "direct.state":
       dispatch({ type: "direct.state", params: n.params as DirectState });
+      return;
+    case "port.state":
+      ports.notification(n.method, n.params);
       return;
     case "update.state":
       dispatch({ type: "update.state", params: n.params as UpdateState });
@@ -733,6 +765,13 @@ rpc.onNotification((n) => {
     case "notes.state":
       notes.notification(n.method, n.params);
       return;
+    case "webtab.state": {
+      const tab = n.params as WebTab;
+      foldWebTab(ui.web, tab);
+      if (tab.closed) webPanel.forget(tab.id);
+      draw();
+      return;
+    }
     default:
       return;
   }
@@ -817,9 +856,12 @@ function openDevices(focus?: string): void {
   // Devices lies over the panes: the context, under it, goes (the draw below takes it away), and so do New group and Teammates.
   ui.contextOpen = false;
   team.closeOverlay();
+  const opening = ui.devices === undefined;
   ui.devices ??= { errorsAt: state.errorsSeen };
   putRailAway();
   void loadLan();
+  // what listens on each machine, read again as the page opens
+  if (opening) ports.devicesOpened();
   draw();
   const body = roots.devices.querySelector<HTMLElement>(".devices-body");
   const [kind, id] = focus?.split(/:(.*)/) ?? [];
@@ -3593,6 +3635,61 @@ function syncRemote(): void {
   syncPinned(here && dock === "beside");
 }
 
+/** The web tabs open beside agents' chats, as the node has them, once connected. */
+async function loadWebTabs(): Promise<void> {
+  if (!state.hostWebTabs || !state.scopes.includes("sessions:read")) return;
+  try {
+    const r = (await rpc.request("webtab.list", {})) as { tabs: WebTab[] };
+    resetWebTabs(ui.web, r.tabs);
+    draw();
+  } catch {
+    // a node too old to keep web tabs has none
+  }
+}
+
+/** Opens a web tab beside a session's chat: a blank one, whose address the user types. */
+async function openWebTab(session: string, url?: string): Promise<void> {
+  try {
+    const r = (await rpc.request("webtab.open", { session, ...(url ? { url } : {}) })) as { tab: WebTab };
+    foldWebTab(ui.web, r.tab);
+    draw();
+  } catch (e) {
+    fail("The web tab did not open", e);
+  }
+}
+
+/** A session's Web button: its tabs shown or put away, or a first one opened. */
+function toggleWeb(session: string): void {
+  if (sessionTabs(ui.web, session).length === 0) {
+    void openWebTab(session);
+    return;
+  }
+  if (ui.web.away.has(session)) ui.web.away.delete(session);
+  else ui.web.away.add(session);
+  draw();
+}
+
+/**
+ * The selected session's web tabs beside the pane, or over it on a narrow window. They wait,
+ * their pages hidden and kept, on another tab, under the desktop beside the pane, a file, the
+ * context or the devices page.
+ */
+function syncWeb(): void {
+  const session = ui.terminal === undefined && ui.group === undefined ? ui.selected : undefined;
+  const tab = session !== undefined && state.hostWebTabs && webShown(ui.web, session) ? activeTab(ui.web, session) : undefined;
+  if (!session || !tab) {
+    webPanel.hide();
+    return;
+  }
+  const dock: ViewerDock = narrow.matches ? "over" : "beside";
+  const parent = document.getElementById(dock === "over" ? "panes" : "body")!;
+  webPanel.show(session, sessionTabs(ui.web, session), tab, parent, {
+    dock,
+    width: ui.webWidth,
+    concealed: remoteShown() || viewer.shown !== undefined || contextView.shown || ui.devices !== undefined,
+  });
+}
+
 /** The pinned prompts over the pane's column while the desktop takes the right of the window. */
 function syncPinned(beside: boolean): void {
   if (!beside) {
@@ -3778,18 +3875,18 @@ function saveRemotePrefs(): void {
 /** The room the pane keeps beside the viewer, whatever the divider is dragged to. */
 const PANE_MIN = 320;
 
-/** The panels a divider widens: the file viewer, and the desktop beside the pane. */
-type Panel = "file" | "remote";
+/** The panels a divider widens: the file viewer, the desktop beside the pane, and the web tabs. */
+type Panel = "file" | "remote" | "web";
 
 /** A divider is held: whose, and where in the panel the pointer took it, from its left edge. */
 let viewerDrag: { pointer: number; grab: number; panel: Panel } | undefined;
 
 function panelOf(split: Element): Panel {
-  return split.closest(".remote-view") ? "remote" : "file";
+  return split.closest(".remote-view") ? "remote" : split.closest(".web-view") ? "web" : "file";
 }
 
 function panelEl(panel: Panel): HTMLElement {
-  return panel === "remote" ? remotePanel.el : viewer.el;
+  return panel === "remote" ? remotePanel.el : panel === "web" ? webPanel.el : viewer.el;
 }
 
 /** The most of the width a panel may take: what leaves the pane its room beside the rail. */
@@ -3824,6 +3921,11 @@ function setRemoteWidth(value: number, save: boolean): void {
 }
 
 function setPanelWidth(panel: Panel, value: number, save: boolean): void {
+  if (panel === "web") {
+    ui.webWidth = remoteViewWidth(value);
+    webPanel.setWidth(ui.webWidth);
+    return;
+  }
   if (panel === "remote") setRemoteWidth(value, save);
   else setViewerWidth(value, save);
 }
@@ -4262,7 +4364,7 @@ document.addEventListener("click", (ev) => {
   const target = (ev.target as HTMLElement | null)?.closest<HTMLElement>("[data-action]");
   if (!target || (target as HTMLButtonElement).disabled) return;
   // Group chats' and teammates' own, and the share form's folder picker; then Lead and its list; then a Messages pane's.
-  if (team.click(target) || lead.click(target) || talks.click(target) || track.click(target) || notes.click(target) || listen.click(target)) return;
+  if (team.click(target) || lead.click(target) || talks.click(target) || track.click(target) || notes.click(target) || listen.click(target) || ports.click(target)) return;
   switch (target.dataset["action"]) {
     case "window-latest":
       if (target.dataset["session"]) void latest(target.dataset["session"]);
@@ -4727,6 +4829,11 @@ document.addEventListener("click", (ev) => {
     case "connections-open":
       openDevices("connections");
       return;
+    case "session-web": {
+      const session = target.dataset["session"];
+      if (session) toggleWeb(session);
+      return;
+    }
     case "session-connect": {
       // the Connect panel under a session's header, opened on Invite someone, or closed again
       const session = target.dataset["session"];
@@ -4891,7 +4998,7 @@ document.addEventListener("click", (ev) => {
 
 document.addEventListener("submit", (ev) => {
   const form = ev.target as HTMLFormElement;
-  if (team.submit(form) || notes.submit(form)) {
+  if (team.submit(form) || notes.submit(form) || ports.submit(form)) {
     ev.preventDefault();
     return;
   }

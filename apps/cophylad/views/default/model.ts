@@ -35,6 +35,9 @@ import { applyNote, isNotifyCall } from "./notemodel.ts";
 import { isVoiceCall } from "./listenmodel.ts";
 import { applyTalk } from "./talkmodel.ts";
 import { applyTrack } from "./trackmodel.ts";
+import { applyPorts } from "./portmodel.ts";
+import type { PortListing } from "./portmodel.ts";
+import type { ListeningPort, PortForward } from "@cophyla/protocol";
 import type { TalkPage } from "./talkmodel.ts";
 import type { Access, Ask, AskAnswer, AssistantHarness, AssistantState, AuditEntry, BackupState, BrainContext, Client, ClientNotificationParams, Connection, ContentBlock, ConversationSpend, Controller, DisplaySize, DoorState, FileText, FolderListing, FolderPick, GitState, Grant, GrantKind, GrantRole, HarnessProfile, LanState, LimitWindow, Message, MetricsSample, Node, NodeId, Platform, ProcessOwner, ProfileLimits, RemoteHost, RemoteState, RemoteViewer, Scope, ClientSession as Session, SessionEvent, SpendTotals, Task, Terminal, ClientThread as Thread, Transfer, TurnProgress, TurnStep, ViewManifest, VoiceState, VoiceStopped, VoiceUnheard, ClientWorkspace as Workspace } from "@cophyla/protocol";
 
@@ -218,6 +221,8 @@ export interface HostReady {
   embed?: boolean;
   /** The host is a wide window with a pointer on a computer without being the desktop app: the page in a desktop browser. */
   desk?: boolean;
+  /** The host opens web tabs beside agents' chats and lays their pages over the view (`host.webtab`): the desktop app on Windows. */
+  webTabs?: boolean;
 }
 
 /** A reply still streaming: `chat.delta` blocks under a message id the final `chat.message` reuses, or dropped by a `chat.retract`. */
@@ -247,6 +252,8 @@ export interface ViewState {
   hostEmbed: boolean;
   /** The host is the page in a desktop browser: laid out and loaded as the desktop app is, though its client is a controller. */
   hostDesk: boolean;
+  /** The host opens web tabs beside agents' chats (`host.webtab`): the desktop app on Windows. */
+  hostWebTabs: boolean;
   connected: boolean;
   scopes: Scope[];
   sessions: Map<string, SessionCard>;
@@ -342,6 +349,10 @@ export interface ViewState {
   remote: Map<NodeId, RemoteState>;
   /** Each node's direct connections, from `direct.state`, while connected. */
   direct: Map<NodeId, DirectState>;
+  /** What listens on each machine, from `ports.list`, as last asked, while connected. */
+  portLists: Map<NodeId, PortListing>;
+  /** The ports this client opened, by id, from `port.state`, while connected. */
+  forwards: Map<string, PortForward>;
   /** Each node's releases, from `update.state`, by `updateKey`: kept through a disconnect, which an update's restart is, until the next hello says them again. */
   updates: Map<string, UpdateState>;
   /** The phone code the user asked a node for, while it is shown. */
@@ -514,6 +525,12 @@ export type Action =
   | { type: "remote.pin"; node?: NodeId }
   | { type: "account.state"; params: AccountState }
   | { type: "direct.state"; params: DirectState }
+  /** What listens on a machine is being asked for. */
+  | { type: "ports.loading"; node: NodeId }
+  /** What listens on a machine came back, or why it did not (`error`). */
+  | { type: "ports"; node: NodeId; ports?: ListeningPort[]; error?: string }
+  /** The ports this client opened, whole. */
+  | { type: "port.state"; params: { forwards: PortForward[] } }
   | { type: "update.state"; params: UpdateState }
   /** A code came back from `account.login`, or the panel closed. */
   | { type: "login"; offer?: LoginOffer }
@@ -556,6 +573,7 @@ export function initialState(): ViewState {
     hostFilePaths: false,
     hostEmbed: false,
     hostDesk: false,
+    hostWebTabs: false,
     connected: false,
     scopes: [],
     sessions: new Map(),
@@ -589,6 +607,8 @@ export function initialState(): ViewState {
     spend: new Map(),
     remote: new Map(),
     direct: new Map(),
+    portLists: new Map(),
+    forwards: new Map(),
     updates: new Map(),
     quick: false,
     chatLoaded: false,
@@ -853,7 +873,7 @@ export function forwardParams(c: Pick<SessionCard, "events" | "window">, page: n
 
 /** Folds one action in. Mutates and returns `state`; the renderer diffs the DOM. */
 export function apply(state: ViewState, action: Action): ViewState {
-  if (applyTeam(state, action) || applyLead(state, action) || applyTalk(state, action) || applyTrack(state, action) || applyNote(state, action)) return state;
+  if (applyTeam(state, action) || applyLead(state, action) || applyTalk(state, action) || applyTrack(state, action) || applyNote(state, action) || applyPorts(state, action)) return state;
   switch (action.type) {
     case "host.ready": {
       const p = action.params;
@@ -866,6 +886,7 @@ export function apply(state: ViewState, action: Action): ViewState {
       state.hostFilePaths = p.filePaths === true;
       state.hostEmbed = p.embed === true;
       state.hostDesk = p.desk === true;
+      state.hostWebTabs = p.webTabs === true;
       if (typeof p.docFrame === "string" && p.docFrame !== "") state.hostDocFrame = p.docFrame;
       else delete state.hostDocFrame;
       return state;
@@ -892,6 +913,9 @@ export function apply(state: ViewState, action: Action): ViewState {
         // The hosts' states come again after the next hello; a code or a form from before is for a line that is gone.
         state.remote.clear();
         state.direct.clear();
+        // a port opened goes with the client it was opened for; what listens is asked again as Devices opens
+        state.portLists.clear();
+        state.forwards.clear();
         delete state.remoteInvite;
         delete state.remotePin;
         // Every terminal comes again with the next `terminal.list`, and every transfer with `transfer.list`.
@@ -1367,6 +1391,11 @@ export function apply(state: ViewState, action: Action): ViewState {
     case "notes.setting":
     case "notes.state":
       // folded by applyNote, above
+      return state;
+    case "ports.loading":
+    case "ports":
+    case "port.state":
+      // folded by applyPorts, above
       return state;
     case "error":
       state.errors.push(action.message);
