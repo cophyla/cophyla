@@ -69,7 +69,9 @@ jobs:
       - run: bun install --frozen-lockfile
 
       - name: the tree is this version
-        run: bun run apps/installer/scripts/version.ts --check && grep -q "\"version\": \"$VERSION\"" apps/cophylad/package.json
+        run: |
+          bun run apps/installer/scripts/version.ts --check
+          grep -q "\"version\": \"$VERSION\"" apps/cophylad/package.json
 
       # the embedding model and the rest the platform ships, pinned by hash in the script
       - uses: actions/cache@v4
