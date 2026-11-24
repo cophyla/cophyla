@@ -4,14 +4,18 @@
 // keeps it out of `views::is_view`, so nothing that answers the view's frame (the dropped files'
 // handler) ever answers it. The page and its policy are the protocol's; `docframe.html` and
 // `CSP` here are the desktop's copies, which apps/ui/test/docframe.test.ts checks against them.
-// Only the host webview is answered. The web view says where the scheme is, as for `view`:
-// `http://doc.localhost` on Windows, `doc://localhost` on macOS and Linux.
+// The page is answered under `CSP` with the origin of the shell's media server (media.rs) added
+// to `media-src`, which is known once it listens: the protocol's `docFrameCsp(origin)`, so the
+// player page streams a video or a sound from it. Only the host webview is answered. The web
+// view says where the scheme is, as for `view`: `http://doc.localhost` on Windows,
+// `doc://localhost` on macOS and Linux.
 
 use std::borrow::Cow;
 
 use tauri::http::{header, Request, Response, StatusCode};
-use tauri::{Runtime, UriSchemeContext, Url};
+use tauri::{Manager, Runtime, UriSchemeContext, Url};
 
+use crate::media::Media;
 use crate::views::HOST_LABEL;
 
 pub const SCHEME: &str = "doc";
@@ -27,6 +31,15 @@ const PAGE: &str = include_str!("docframe.html");
 /// The page's policy: the protocol's `DOC_FRAME_CSP`.
 pub const CSP: &str = "sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval' data: blob:; style-src 'unsafe-inline' data: blob:; img-src data: blob:; font-src data: blob:; media-src data: blob:; worker-src blob:; connect-src 'none'; frame-src 'none'; form-action 'none'; base-uri 'none'";
 
+/// The policy the page is answered with: `CSP` with the media server's origin added to
+/// `media-src` (the protocol's `docFrameCsp(origin)`), or `CSP` itself when there is none.
+pub fn policy(media_origin: Option<&str>) -> String {
+    match media_origin {
+        Some(origin) => CSP.replacen("media-src data: blob:", &format!("media-src data: blob: {origin}"), 1),
+        None => CSP.to_string(),
+    }
+}
+
 /// The page's URL, as a view is told it in `host.ready`.
 pub fn url() -> String {
     format!("{ORIGIN}{PATH}")
@@ -37,11 +50,11 @@ pub fn is_doc(url: &Url) -> bool {
     Url::parse(ORIGIN).is_ok_and(|doc| url.scheme() == doc.scheme() && url.host_str() == doc.host_str() && url.port() == doc.port())
 }
 
-fn respond(status: StatusCode, mime: &str, body: Vec<u8>) -> Response<Cow<'static, [u8]>> {
+fn respond(status: StatusCode, mime: &str, body: Vec<u8>, csp: &str) -> Response<Cow<'static, [u8]>> {
     Response::builder()
         .status(status)
         .header(header::CONTENT_TYPE, mime)
-        .header(header::CONTENT_SECURITY_POLICY, CSP)
+        .header(header::CONTENT_SECURITY_POLICY, csp)
         .header(header::X_CONTENT_TYPE_OPTIONS, "nosniff")
         .header(header::CACHE_CONTROL, "no-store")
         .header(header::REFERRER_POLICY, "no-referrer")
@@ -51,13 +64,14 @@ fn respond(status: StatusCode, mime: &str, body: Vec<u8>) -> Response<Cow<'stati
 
 /// The `doc` scheme handler: the page at `PATH`, for the host webview only.
 pub fn handle<R: Runtime>(ctx: UriSchemeContext<'_, R>, request: Request<Vec<u8>>) -> Response<Cow<'static, [u8]>> {
+    let csp = policy(ctx.app_handle().try_state::<Media>().and_then(|m| m.origin()).as_deref());
     if ctx.webview_label() != HOST_LABEL {
-        return respond(StatusCode::FORBIDDEN, "text/plain", b"not the host".to_vec());
+        return respond(StatusCode::FORBIDDEN, "text/plain", b"not the host".to_vec(), &csp);
     }
     if request.uri().path() != PATH {
-        return respond(StatusCode::NOT_FOUND, "text/plain", b"not found".to_vec());
+        return respond(StatusCode::NOT_FOUND, "text/plain", b"not found".to_vec(), &csp);
     }
-    respond(StatusCode::OK, "text/html; charset=utf-8", PAGE.as_bytes().to_vec())
+    respond(StatusCode::OK, "text/html; charset=utf-8", PAGE.as_bytes().to_vec(), &csp)
 }
 
 #[cfg(test)]
@@ -83,5 +97,14 @@ mod tests {
         }
         assert!(!CSP.contains("allow-same-origin") && !CSP.contains("allow-top-navigation") && !CSP.contains("allow-popups"));
         assert!(PAGE.contains("ev.source !== parent"));
+    }
+
+    #[test]
+    fn media_comes_from_the_media_server_alone_and_nothing_else_changes() {
+        assert_eq!(CSP.matches("; media-src data: blob:;").count(), 1, "{CSP}");
+        assert_eq!(policy(None), CSP);
+        let with = policy(Some("http://127.0.0.1:49152"));
+        assert_eq!(with, CSP.replace("media-src data: blob:;", "media-src data: blob: http://127.0.0.1:49152;"));
+        assert_eq!(with.matches("127.0.0.1").count(), 1);
     }
 }

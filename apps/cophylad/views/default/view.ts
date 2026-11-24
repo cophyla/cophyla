@@ -3172,7 +3172,8 @@ function syncViewer(): void {
   const target: ViewerTarget = { from: open.from, rel: open.rel, root, opened: open.opened, ...(open.line !== undefined ? { line: open.line } : {}), ...(open.folder ? { folder: true as const } : {}) };
   // Over the pane it lies in the pane's column; beside it, it takes a column of its own.
   const parent = document.getElementById(dock === "over" ? "panes" : "body")!;
-  viewer.show(target, parent, { dock, width: ui.viewerWidth, wrap: ui.viewerWrap, source: ui.viewerSource, dockable: !crowded, connected: state.connected, ...(state.hostDocFrame ? { docFrame: state.hostDocFrame } : {}) });
+  const node = viewedPath(state, open.from, open.rel)?.node;
+  viewer.show(target, parent, { dock, width: ui.viewerWidth, wrap: ui.viewerWrap, source: ui.viewerSource, dockable: !crowded, connected: state.connected, ...(state.hostDocFrame ? { docFrame: state.hostDocFrame } : {}), ...(state.hostMedia ? { media: true } : {}), ...(node ? { node } : {}) });
 }
 
 /**

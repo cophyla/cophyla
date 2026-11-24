@@ -11,7 +11,9 @@
 // stream plugin in a dialog of its own through a forwarder on the phone's loopback (the
 // hello says `forward`, so the node answers the page's path); a port of one of the user's
 // machines, shown by the same plugin in a page dialog through a forwarder of its own whose
-// connections are pipes to the share the node answered (`native/ports.ts`); and the phone's own signals —
+// connections are pipes to the share the node answered (`native/ports.ts`); a video or a sound
+// streamed to the view's player by the Kotlin media plugin, its pieces kept in the app's cache
+// (`native/media.ts`); and the phone's own signals —
 // the app going to the background (the m8 rule: the button up, the microphone off and a stream
 // closed at once; the socket kept two minutes for a quick return, with the node told the
 // phone is away, then closed) and the network changing (the LAN tried again, and not at all
@@ -31,13 +33,15 @@ import type { Credential, NodeAddress } from "./pairing.ts";
 import { inviteTransport, pairingTransport, relayTransport } from "./transport.ts";
 import { lanUrl, nativeTransport } from "./native/native-io.ts";
 import type { CophylaSocketPlugin } from "./native/native-io.ts";
-import { fileUrl } from "./native/platform.ts";
+import { fileUrl, isAndroid } from "./native/platform.ts";
 import { openDirect } from "./direct.ts";
 import type { PeerLike } from "./direct.ts";
 import type { P2pTransport } from "./link-core.ts";
 import { PipeBridge, planOpen, Streams } from "./native/stream.ts";
 import type { CophylaStreamPlugin } from "./native/stream.ts";
 import { Ports } from "./native/ports.ts";
+import { phoneMedia } from "./native/media.ts";
+import type { CophylaMediaPlugin } from "./native/media.ts";
 import { PushBridge } from "./native/push.ts";
 import { stageLocally } from "./native/stage.ts";
 import { pendingSignIn, preferencesStore } from "./native/storage.ts";
@@ -48,6 +52,7 @@ const SERVER_URL = typeof COPHYLA_SERVER_URL === "string" ? COPHYLA_SERVER_URL :
 
 const socketPlugin = registerPlugin<CophylaSocketPlugin>("CophylaSocket");
 const streamPlugin = registerPlugin<CophylaStreamPlugin>("CophylaStream");
+const mediaPlugin = registerPlugin<CophylaMediaPlugin>("CophylaMedia");
 
 /** The remote desktop on the screen; built once the app is. */
 let streams: Streams | undefined;
@@ -140,9 +145,11 @@ const app = boot({
         fileUrl,
         get: (id) => conn.request<ViewContent>("view.get", { id }),
         ...(conn.state.hello ? { platform: conn.state.hello.platformVersion } : {}),
+        ...(isAndroid() ? { mediaOrigin: location.origin } : {}),
       },
       manifest,
     ),
+  ...(isAndroid() ? { media: phoneMedia(mediaPlugin, location.origin) } : {}),
   hostOpen: async (params) => {
     const plan = planOpen(params, { via: app.io.via, credential: app.io.credential, canForward: streams !== undefined, origin: location.origin });
     switch (plan.kind) {

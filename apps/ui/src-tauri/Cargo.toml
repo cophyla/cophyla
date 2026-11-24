@@ -24,7 +24,7 @@ tauri-plugin-single-instance = "2"
 tauri-plugin-global-shortcut = "2"
 # Launch at login points at the launcher when installed; the autostart plugin hard-codes current_exe().
 auto-launch = "0.5"
-tokio = { version = "1", features = ["sync", "time", "macros", "net", "rt-multi-thread"] }
+tokio = { version = "1", features = ["sync", "time", "macros", "net", "rt-multi-thread", "io-util"] }
 tokio-tungstenite = "0.30"
 futures-util = "0.3"
 serde = { version = "1", features = ["derive"] }
@@ -35,10 +35,14 @@ log = "0.4"
 env_logger = "0.11"
 percent-encoding = "2"
 base64 = "0.22"
+# A media stream's key named on disk by its SHA-256, and the media server's secret for a run
+# (media.rs): the versions already in the lock.
+sha2 = "0.10"
+getrandom = "0.3"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.56"
-windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_UI_Shell", "Win32_UI_Input_KeyboardAndMouse", "Win32_System_SystemInformation", "Foundation", "Data_Xml_Dom", "UI_Notifications"] }
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_UI_Shell", "Win32_UI_Input_KeyboardAndMouse", "Win32_System_SystemInformation", "Foundation", "Data_Xml_Dom", "UI_Notifications", "Win32_System_IO", "Win32_System_Ioctl"] }
 # The host page's microphone granted without WebView2's prompt: the versions wry is built on.
 webview2-com = "0.38"
 windows-core-wv2 = { package = "windows-core", version = "0.61" }

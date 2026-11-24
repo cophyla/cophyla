@@ -10,7 +10,8 @@
 // a NUL shows in its first 8000 bytes, as git decides; an image asked for as one comes whole,
 // as base64, up to 5 MiB. A file asked for whole comes as its bytes, whatever it is, a piece of
 // WHOLE_CHUNK at a time up to WHOLE_MAX, for a viewer that draws it (an image, a PDF, what a
-// page loads): a TIFF or a HEIC image as the PNG the computer's own codecs make of it
+// page loads); a video or a sound up to VIDEO_MAX, and of any size for a player that streams it
+// (`stream`), which asks only for the pieces it plays: a TIFF or a HEIC image as the PNG the computer's own codecs make of it
 // (convert.ts), kept a while so every piece is of the same PNG. A folder, a pipe or a device is
 // refused before anything opens it, so a read never waits on a writer. The folder a bare terminal started in is read the same way.
 // So is a file anywhere on the computer, by its full path (`readAt`), for a path an agent named
@@ -53,7 +54,7 @@ export const IMAGE_MAX = 5 * 1024 * 1024;
 export const WHOLE_CHUNK = 1.5 * 1024 * 1024;
 /** Bytes of a file sent whole at most; a bigger one comes as binary, with nothing to show. */
 export const WHOLE_MAX = 64 * 1024 * 1024;
-/** Bytes of a video sent whole at most, for a viewer that plays it: clips run bigger than pictures. */
+/** Bytes of a video or a sound sent whole at most, for a viewer that plays it: clips run bigger than pictures. A player that streams asks for pieces of any. */
 export const VIDEO_MAX = 256 * 1024 * 1024;
 /** Converted images kept, so a PNG sent a piece at a time is made once. */
 const CONVERTED_KEEP = 3;
@@ -80,9 +81,29 @@ const VIDEO_TYPES: Readonly<Record<string, string>> = {
   ogv: "video/ogg",
 };
 
+/** The sounds a viewer plays, by extension: read as a video is. */
+const AUDIO_TYPES: Readonly<Record<string, string>> = {
+  mp3: "audio/mpeg",
+  m4a: "audio/mp4",
+  m4b: "audio/mp4",
+  aac: "audio/aac",
+  wav: "audio/wav",
+  ogg: "audio/ogg",
+  oga: "audio/ogg",
+  opus: "audio/ogg",
+  flac: "audio/flac",
+  weba: "audio/webm",
+};
+
 /** Whether a path names a video a viewer plays, by its extension. */
 export function isVideo(path: string): boolean {
   return Object.hasOwn(VIDEO_TYPES, extension(path));
+}
+
+/** Whether a path names a video or a sound a viewer plays, by its extension. */
+export function isMedia(path: string): boolean {
+  const ext = extension(path);
+  return Object.hasOwn(VIDEO_TYPES, ext) || Object.hasOwn(AUDIO_TYPES, ext);
 }
 
 /** What else a viewer reads whole, by extension: a PDF it draws, the page it runs, and what a page loads beside it. */
@@ -103,9 +124,7 @@ const WHOLE_TYPES: Readonly<Record<string, string>> = {
   woff2: "font/woff2",
   ttf: "font/ttf",
   otf: "font/otf",
-  mp3: "audio/mpeg",
-  wav: "audio/wav",
-  ogg: "audio/ogg",
+  ...AUDIO_TYPES,
   ...VIDEO_TYPES,
 };
 
@@ -132,6 +151,8 @@ export interface ReadOptions {
   /** The file is to come as its bytes, the piece starting `at` bytes in. */
   whole?: boolean;
   at?: number;
+  /** A player streams it, a piece at a time as it plays: a video or a sound of any size comes. */
+  stream?: boolean;
 }
 
 /** Runs git with `args` in `cwd`: its exit code and output, or undefined when there is no git to run. */
@@ -157,7 +178,7 @@ export interface SessionFilesDeps {
   /** Bytes per piece of a whole read, and the most sent whole; WHOLE_CHUNK and WHOLE_MAX unless a test says. */
   wholeChunk?: number;
   wholeMax?: number;
-  /** The most of a video sent whole; VIDEO_MAX unless a test says. */
+  /** The most of a video or a sound sent whole; VIDEO_MAX unless a test says. */
   videoMax?: number;
 }
 
@@ -471,7 +492,7 @@ export class SessionFiles {
 
   /** A file found, by its real path and stat, as a viewer gets it: `path` is how it was asked for. */
   private async readTarget(path: string, target: string, info: Stats, opts: ReadOptions): Promise<FileText> {
-    if (opts.whole) return this.readWhole(path, target, info, opts.at ?? 0);
+    if (opts.whole) return this.readWhole(path, target, info, opts.at ?? 0, opts.stream === true);
     try {
       const mime = opts.image ? imageMime(path) : undefined;
       const whole = mime !== undefined && info.size <= (this.deps.imageMax ?? IMAGE_MAX);
@@ -503,9 +524,10 @@ export class SessionFiles {
   /**
    * A file's bytes from `at`, a piece of `wholeChunk`, for a viewer that draws the file: `total`
    * says how many there are in all. A TIFF or a HEIC comes as the PNG its codecs make of it, or
-   * as `binary` with a note when none can; a file past `wholeMax` comes as `binary` alone.
+   * as `binary` with a note when none can; a file past `wholeMax` comes as `binary` alone, and a
+   * video or a sound past `videoMax` unless a player streams it (`stream`).
    */
-  private async readWhole(path: string, target: string, info: Stats, at: number): Promise<FileText> {
+  private async readWhole(path: string, target: string, info: Stats, at: number, stream = false): Promise<FileText> {
     const base = { path, size: info.size, modified: Math.max(0, Math.round(info.mtimeMs)) };
     const chunk = this.deps.wholeChunk ?? WHOLE_CHUNK;
     const kind = convertKind(path);
@@ -516,7 +538,8 @@ export class SessionFiles {
       const piece = png.subarray(at, at + chunk);
       return { ...base, mime: "image/png", base64: Buffer.from(piece.buffer, piece.byteOffset, piece.length).toString("base64"), at, total: png.length };
     }
-    const max = isVideo(path) ? (this.deps.videoMax ?? VIDEO_MAX) : (this.deps.wholeMax ?? WHOLE_MAX);
+    const media = isMedia(path);
+    const max = media ? (stream ? Infinity : (this.deps.videoMax ?? VIDEO_MAX)) : (this.deps.wholeMax ?? WHOLE_MAX);
     if (info.size > max) return { ...base, binary: true };
     if (at > info.size) throw new RpcError("invalid", `${path}: ${at} is past its end`);
     try {

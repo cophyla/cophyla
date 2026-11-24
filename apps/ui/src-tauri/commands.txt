@@ -19,3 +19,6 @@ webtab_go
 webtab_close
 open_link
 ptt_shortcut
+media_open
+media_close
+media_stats

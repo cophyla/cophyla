@@ -512,6 +512,10 @@ pub async fn run_link<R: Runtime>(app: AppHandle<R>) {
                 link.set(&app, LinkState::Disconnected, None, Some(reason), &url);
                 // cophylad closes the web tabs of a host that goes, and so does the shell
                 crate::webtab::close_all(&app);
+                // the answers to the media server's reads went with the connection
+                if let Some(media) = app.try_state::<crate::media::Media>() {
+                    media.link_lost();
+                }
                 backoff = BACKOFF_MIN;
             }
             Attempt::Unreachable { refused, error } => {
@@ -557,8 +561,9 @@ fn version_mismatch(hello: &Value, install: Option<&Install>) -> Option<String> 
     }
 }
 
-/// A `shell:` response is the shell's own; anything else goes to the host page. `update.state`
-/// for the platform also drives the tray item.
+/// A `shell:` response is the shell's own, and a `media:` one the media server's (media.rs), which
+/// reads the pieces it streams itself so they never pass through the page; anything else goes to
+/// the host page. `update.state` for the platform also drives the tray item.
 fn on_frame<R: Runtime>(app: &AppHandle<R>, text: &str) {
     let Ok(v) = serde_json::from_str::<Value>(text) else {
         let _ = app.emit_to(HOST_LABEL, EVENT_FRAME, text);
@@ -569,6 +574,12 @@ fn on_frame<R: Runtime>(app: &AppHandle<R>, text: &str) {
             match v.get("error") {
                 Some(err) => log::info!("{id}: {}", err.get("data").and_then(|d| d.get("message")).or_else(|| err.get("message")).and_then(Value::as_str).unwrap_or("error")),
                 None => log::info!("{id}: ok"),
+            }
+            return;
+        }
+        if id.starts_with(crate::media::RPC_PREFIX) {
+            if let Some(media) = app.try_state::<crate::media::Media>() {
+                media.answered(id, &v);
             }
             return;
         }

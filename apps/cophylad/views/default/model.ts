@@ -217,6 +217,8 @@ export interface HostReady {
   filePaths?: boolean;
   /** Where the host serves the document frame, in which an HTML file's scripts run apart from the view (@cophyla/protocol's docframe.ts). */
   docFrame?: string;
+  /** The host streams videos and sounds to the player from a URL of its own (`host.media`): the desktop app, the phone app. */
+  media?: boolean;
   /** The host lays a stream page over the view where the view places it (`host.open {embed}`, `host.place`, `host.close`): the desktop app, and the page in a desktop browser. */
   embed?: boolean;
   /** The host is a wide window with a pointer on a computer without being the desktop app: the page in a desktop browser. */
@@ -254,6 +256,8 @@ export interface ViewState {
   hostDesk: boolean;
   /** The host opens web tabs beside agents' chats (`host.webtab`): the desktop app on Windows. */
   hostWebTabs: boolean;
+  /** The host streams videos and sounds to the viewer's player (`media` in `host.ready`). */
+  hostMedia: boolean;
   connected: boolean;
   scopes: Scope[];
   sessions: Map<string, SessionCard>;
@@ -574,6 +578,7 @@ export function initialState(): ViewState {
     hostEmbed: false,
     hostDesk: false,
     hostWebTabs: false,
+    hostMedia: false,
     connected: false,
     scopes: [],
     sessions: new Map(),
@@ -887,6 +892,7 @@ export function apply(state: ViewState, action: Action): ViewState {
       state.hostEmbed = p.embed === true;
       state.hostDesk = p.desk === true;
       state.hostWebTabs = p.webTabs === true;
+      state.hostMedia = p.media === true;
       if (typeof p.docFrame === "string" && p.docFrame !== "") state.hostDocFrame = p.docFrame;
       else delete state.hostDocFrame;
       return state;
@@ -3659,7 +3665,35 @@ export function videoKind(path: string): { kind: string; type: string } | undefi
   return Object.hasOwn(VIDEO_KINDS, ext) ? VIDEO_KINDS[ext] : undefined;
 }
 
-/** The most of a video its node sends whole (the daemon's VIDEO_MAX): past it, there is nothing to play. */
+/** The sounds the viewer plays, by extension: what each is called, and the type the player hands the browser. */
+const AUDIO_KINDS: Readonly<Record<string, { kind: string; type: string }>> = {
+  mp3: { kind: "MP3", type: "audio/mpeg" },
+  m4a: { kind: "AAC", type: "audio/mp4" },
+  m4b: { kind: "AAC", type: "audio/mp4" },
+  aac: { kind: "AAC", type: "audio/aac" },
+  wav: { kind: "WAV", type: "audio/wav" },
+  ogg: { kind: "Ogg", type: "audio/ogg" },
+  oga: { kind: "Ogg", type: "audio/ogg" },
+  opus: { kind: "Opus", type: "audio/ogg" },
+  flac: { kind: "FLAC", type: "audio/flac" },
+  weba: { kind: "WebM", type: "audio/webm" },
+};
+
+/** What kind of sound a path names, and the type it is played as; undefined for one that names none. */
+export function audioKind(path: string): { kind: string; type: string } | undefined {
+  const ext = extensionOf(path);
+  return Object.hasOwn(AUDIO_KINDS, ext) ? AUDIO_KINDS[ext] : undefined;
+}
+
+/** What the viewer plays a path as: a video or a sound, its kind and type; undefined for neither. */
+export function mediaKind(path: string): { kind: string; type: string; audio: boolean } | undefined {
+  const video = videoKind(path);
+  if (video) return { ...video, audio: false };
+  const audio = audioKind(path);
+  return audio ? { ...audio, audio: true } : undefined;
+}
+
+/** The most of a video or a sound its node sends whole (the daemon's VIDEO_MAX): past it, a viewer that reads it whole has nothing to play. */
 export const VIDEO_SENT_MAX = 256 * 1024 * 1024;
 
 /** A length of time as a player shows it: `m:ss`, or `h:mm:ss` past an hour. */
@@ -3914,10 +3948,10 @@ export function bytesOf(base64: string): Uint8Array {
   return out;
 }
 
-/** Whether the viewer reads a file whole to draw it, a piece at a time: an image but SVG (which comes as text), a PDF, or a video. */
+/** Whether the viewer reads a file whole to draw it, a piece at a time: an image but SVG (which comes as text), a PDF, a video or a sound. */
 export function readsWhole(path: string): boolean {
   const image = imageKind(path);
-  return (image !== undefined && image !== "SVG") || isPdf(path) || videoKind(path) !== undefined;
+  return (image !== undefined && image !== "SVG") || isPdf(path) || mediaKind(path) !== undefined;
 }
 
 /**
@@ -3928,8 +3962,8 @@ export function readsWhole(path: string): boolean {
 export function viewerMeta(file: FileText, lines: number | undefined, pixels?: { width: number; height: number }, pages?: number, seconds?: number): string {
   const language = fileLanguage(file.path);
   const image = imageKind(file.path);
-  const video = videoKind(file.path);
-  const kind = image ?? (video ? `${video.kind} video` : isPdf(file.path) ? "PDF" : file.binary ? "Binary" : language !== undefined && language !== "todo" ? GRAMMARS[language] : "Text");
+  const media = mediaKind(file.path);
+  const kind = image ?? (media ? `${media.kind} ${media.audio ? "audio" : "video"}` : isPdf(file.path) ? "PDF" : file.binary ? "Binary" : language !== undefined && language !== "todo" ? GRAMMARS[language] : "Text");
   const converted = image !== undefined && image !== "PNG" && file.mime === "image/png";
   const drawn = pixels ? `${converted ? "shown at " : ""}${pixels.width} × ${pixels.height}` : undefined;
   const counted = lines !== undefined && !file.binary && file.text !== undefined ? `${lines.toLocaleString()} line${lines === 1 ? "" : "s"}${file.truncated ? " shown" : ""}` : pages !== undefined ? `${pages.toLocaleString()} page${pages === 1 ? "" : "s"}` : seconds !== undefined ? clockWords(seconds) : undefined;
@@ -3953,10 +3987,10 @@ export function viewerNote(file: FileText): string {
   if (file.base64 !== undefined) return "";
   if (file.note !== undefined) return file.note;
   if (readsWhole(file.path) && (file.binary || file.text !== undefined)) {
-    const video = videoKind(file.path) !== undefined;
-    const what = isPdf(file.path) ? "PDF" : video ? "video" : "image";
-    const show = video ? "play" : "show";
-    const max = video ? VIDEO_SENT_MAX : WHOLE_SENT_MAX;
+    const media = mediaKind(file.path);
+    const what = isPdf(file.path) ? "PDF" : media ? (media.audio ? "audio file" : "video") : "image";
+    const show = media ? "play" : "show";
+    const max = media ? VIDEO_SENT_MAX : WHOLE_SENT_MAX;
     return file.size > max ? `This ${what} is too big to ${show} here: ${fileSizeWords(file.size)}, past ${fileSizeWords(max)}.` : `That computer's Cophyla is too old to ${show} this ${what}: update it there.`;
   }
   if (file.binary) return "This file is not text, so there is nothing to show.";

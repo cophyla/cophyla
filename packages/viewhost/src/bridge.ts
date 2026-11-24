@@ -48,9 +48,12 @@
 // `host.ready`: the desktop app on Windows, which cophylad's `webtab.*` asks to open and close
 // them) shows one over the rectangle `host.webtab {op: "place"}` names or hides it, takes it to a
 // page, back, forward, reloads it or opens its DevTools, for a view with the `sessions:write`
-// scope, and only there. DOM-free.
+// scope, and only there. A host that streams videos and sounds to the view's player (`media` in
+// `host.ready`: the desktop app, the phone app; media.ts) opens a stream with `host.media`, for a
+// view whose scopes take the read it names (`session.file` or `terminal.file`). DOM-free.
 
 import { failure, notification, notificationScope, protocolError, requestScope, RpcNotification, RpcRequest, signalScope } from "@cophyla/protocol";
+import { MEDIA_READS } from "./media.ts";
 import type { RpcId, RpcMessage, RpcResponse, Scope, ViewManifest } from "@cophyla/protocol";
 import type { HelloResult } from "./connection.ts";
 
@@ -92,6 +95,8 @@ export interface HostReady {
   desk?: true;
   /** The host opens the web tabs beside agents' chats and shows them over the view where it says (`host.webtab`): the desktop app on Windows. */
   webTabs?: true;
+  /** The host streams a video or a sound to the player in the document frame from a URL of its own (`host.media`): the desktop app, the phone app. */
+  media?: true;
 }
 
 /** The host's microphone, for a view that draws the talk button: why it is off, while it is. */
@@ -140,13 +145,15 @@ export interface BridgeConfig {
   desk?: boolean;
   /** The host opens web tabs and answers `host.webtab` through `host` (`webTabs` in `host.ready`); absent, `host.webtab` answers `unsupported`. */
   webTabs?: boolean;
+  /** The host streams media and answers `host.media` through `host` (`media` in `host.ready`); absent, `host.media` answers `unsupported`. */
+  media?: boolean;
 }
 
 /** The requests a view may make of the host itself, by method. */
 export type HostRequests = (method: string, params: unknown) => Promise<unknown>;
 
 /** The host requests a view may make, and the scope each needs; `null` is none. */
-const HOST_METHODS: Record<string, Scope | null> = { "host.open": "remote", "host.place": "remote", "host.close": "remote", "host.chooseView": null, "host.settings": null, "host.openLink": null, "host.savePrefs": null, "host.filePaths": null, "host.webtab": "sessions:write" };
+const HOST_METHODS: Record<string, Scope | null> = { "host.open": "remote", "host.place": "remote", "host.close": "remote", "host.chooseView": null, "host.settings": null, "host.openLink": null, "host.savePrefs": null, "host.filePaths": null, "host.webtab": "sessions:write", "host.media": null };
 
 /** The record a `host.savePrefs` keeps: a plain object whose JSON fits in `PREFS_MAX`. */
 export function viewPrefs(params: unknown): ViewPrefs {
@@ -217,6 +224,7 @@ export class Bridge {
   private embed: boolean;
   private desk: boolean;
   private webTabs: boolean;
+  private media: boolean;
   private n = 0;
   /** The host's microphone as last said, so a view that loads while it is off hears it. */
   private micState: HostMic = {};
@@ -271,6 +279,7 @@ export class Bridge {
     this.embed = cfg.embed === true;
     this.desk = cfg.desk === true;
     this.webTabs = cfg.webTabs === true;
+    this.media = cfg.media === true;
     this.io = io;
   }
 
@@ -354,6 +363,8 @@ export class Bridge {
     const own: Record<string, HostRequests | undefined> = { "host.chooseView": this.chooser, "host.settings": this.settings, "host.openLink": this.links, "host.savePrefs": this.savePrefs, "host.filePaths": this.filePaths };
     // a web tab is the host's own requests' too, where the host opens web tabs at all
     if (req.method === "host.webtab" && !this.webTabs) own[req.method] = undefined;
+    // so is a stream, where the host streams media
+    if (req.method === "host.media" && !this.media) own[req.method] = undefined;
     const handler = req.method in own ? own[req.method] : this.host;
     if (needs === undefined || !handler) {
       this.io.toView(failure(req.id, protocolError("unsupported", `this host has no ${req.method}`)));
@@ -362,6 +373,17 @@ export class Bridge {
     if (needs !== null && !this.scopes.includes(needs)) {
       this.io.toView(failure(req.id, protocolError("denied", `view ${this.manifest.id} lacks scope ${needs}`)));
       return;
+    }
+    // a stream reads the file as the view would, so the view must hold that read's scope
+    if (req.method === "host.media") {
+      const read = (req.params as { op?: unknown; read?: { method?: unknown } } | undefined)?.read?.method;
+      if ((req.params as { op?: unknown } | undefined)?.op === "open") {
+        const scope = typeof read === "string" && (MEDIA_READS as readonly string[]).includes(read) ? requestScope(read) : undefined;
+        if (!scope || !this.scopes.includes(scope)) {
+          this.io.toView(failure(req.id, protocolError("denied", `view ${this.manifest.id} may not read with ${String(read)}`)));
+          return;
+        }
+      }
     }
     handler(req.method, req.params ?? {}).then(
       (result) => this.io.toView({ jsonrpc: "2.0", id: req.id, result: result ?? {} } as RpcResponse),
@@ -404,6 +426,7 @@ export class Bridge {
     if (this.embed) params.embed = true;
     if (this.desk) params.desk = true;
     if (this.webTabs && this.host) params.webTabs = true;
+    if (this.media && this.host) params.media = true;
     this.io.toView(notification("host.ready", params));
     this.io.toView(notification("host.state", { connected: true }));
     if (this.hasTalk && this.micState.error !== undefined) this.io.toView(notification("host.mic", this.micState));

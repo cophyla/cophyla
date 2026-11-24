@@ -295,6 +295,38 @@ describe("bridge", () => {
     expect((bareOut[0] as RpcNotification).params).not.toHaveProperty("embed");
   });
 
+  test("a host that streams media says media in host.ready; host.media opens a stream only with a read the view's scopes take", async () => {
+    const calls: unknown[] = [];
+    const host = async (_method: string, params: unknown) => {
+      calls.push(params);
+      return { id: "m1", url: "http://doc.localhost/media/m1/a.mp3" };
+    };
+    const toView: RpcMessage[] = [];
+    const answer = (id: string) => toView.find((f) => (f as { id: unknown }).id === id);
+    const open = (method: string) => ({ op: "open", read: { method, params: { id: "ses_1", path: "a.mp3" } }, size: 10, modified: 1, mime: "audio/mpeg", name: "a.mp3" });
+    const bridge = new Bridge({ manifest: MANIFEST, clientScopes: CLIENT.scopes, instance: 1, host, media: true }, { toCophylad: () => {}, toView: (f) => toView.push(f) });
+    bridge.ready(HELLO);
+    expect((toView[0] as RpcNotification).params).toMatchObject({ media: true });
+    bridge.fromView(req("m1", "host.media", open("session.file")));
+    // the view holds no terminal scope, so a terminal's file is not its to stream
+    bridge.fromView(req("m2", "host.media", open("terminal.file")));
+    bridge.fromView(req("m3", "host.media", open("chat.send")));
+    bridge.fromView(req("m4", "host.media", { op: "close", id: "m1" }));
+    await Bun.sleep(0);
+    expect(answer("m1")).toEqual({ jsonrpc: "2.0", id: "m1", result: { id: "m1", url: "http://doc.localhost/media/m1/a.mp3" } });
+    expect(answer("m2")).toMatchObject({ error: { data: { code: "denied" } } });
+    expect(answer("m3")).toMatchObject({ error: { data: { code: "denied" } } });
+    expect(calls).toEqual([open("session.file"), { op: "close", id: "m1" }]);
+    // no media from the host: unsupported, and none said
+    const plain: RpcMessage[] = [];
+    const none = new Bridge({ manifest: MANIFEST, clientScopes: CLIENT.scopes, instance: 2, host }, { toCophylad: () => {}, toView: (f) => plain.push(f) });
+    none.ready(HELLO);
+    expect((plain[0] as RpcNotification).params).not.toHaveProperty("media");
+    none.fromView(req("p1", "host.media", open("session.file")));
+    await Bun.sleep(0);
+    expect(plain.find((f) => (f as { id: unknown }).id === "p1")).toMatchObject({ error: { data: { code: "unsupported" } } });
+  });
+
   test("a host that opens web tabs says webTabs in host.ready; host.webtab is its, for the sessions:write scope, and nowhere else", async () => {
     const calls: { method: string; params: unknown }[] = [];
     const host = async (method: string, params: unknown) => {

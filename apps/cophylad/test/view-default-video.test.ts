@@ -5,7 +5,7 @@
 
 import { describe, expect, test } from "bun:test";
 import type { FileText } from "@cophyla/protocol";
-import { clockWords, readsWhole, VIDEO_SENT_MAX, videoKind, viewerMeta, viewerNote } from "../views/default/model.ts";
+import { audioKind, clockWords, mediaKind, readsWhole, VIDEO_SENT_MAX, videoKind, viewerMeta, viewerNote } from "../views/default/model.ts";
 import { NUDGE_S, PLAYER_KEYS, playerPage, SKIP_S } from "../views/default/videoplayer.ts";
 
 const file = (over: Partial<FileText>): FileText => ({ path: "clips/demo.mp4", size: 24 * 1024 * 1024, modified: 1, ...over });
@@ -37,6 +37,20 @@ describe("a video in the viewer", () => {
     expect(viewerNote({ path: "a.png", size: 1, modified: 1, binary: true })).toBe("That computer's Cophyla is too old to show this image: update it there.");
   });
 
+  test("a sound by its extension: what it is called, the type it plays as; its head and its note", () => {
+    expect(audioKind("music/Song.MP3")).toEqual({ kind: "MP3", type: "audio/mpeg" });
+    expect(["a.m4a", "a.aac", "a.wav", "a.ogg", "a.oga", "a.opus", "a.flac", "a.weba", "a.m4b"].map((p) => audioKind(p)?.type)).toEqual(["audio/mp4", "audio/aac", "audio/wav", "audio/ogg", "audio/ogg", "audio/ogg", "audio/flac", "audio/webm", "audio/mp4"]);
+    expect(mediaKind("a.flac")).toEqual({ kind: "FLAC", type: "audio/flac", audio: true });
+    expect(mediaKind("a.mp4")).toEqual({ kind: "MP4", type: "video/mp4", audio: false });
+    for (const none of ["notes.txt", "mp3", "a.mp3.txt"]) expect(mediaKind(none)).toBeUndefined();
+    expect(readsWhole("a.mp3")).toBe(true);
+    const song = file({ path: "music/song.mp3", size: 5 * 1024 * 1024 });
+    expect(viewerMeta({ ...song, base64: "" }, undefined, undefined, undefined, 201)).toBe("MP3 audio · 3:21 · 5 MB");
+    expect(viewerNote({ ...song, base64: "" })).toBe("");
+    expect(viewerNote({ ...song, binary: true })).toBe("That computer's Cophyla is too old to play this audio file: update it there.");
+    expect(viewerNote({ ...song, binary: true, size: VIDEO_SENT_MAX + 1 })).toBe("This audio file is too big to play here: 256 MB, past 256 MB.");
+  });
+
   test("a length as a player shows it", () => {
     expect([clockWords(0), clockWords(9.9), clockWords(61), clockWords(600), clockWords(3600), clockWords(3725)]).toEqual(["0:00", "0:09", "1:01", "10:00", "1:00:00", "1:02:05"]);
     expect([clockWords(Number.NaN), clockWords(Number.POSITIVE_INFINITY), clockWords(-4)]).toEqual(["0:00", "0:00", "0:00"]);
@@ -51,9 +65,21 @@ describe("a video in the viewer", () => {
     expect(page).toContain(`Back ${SKIP_S} seconds`);
     expect(page).toContain(`Forward ${SKIP_S} seconds`);
     expect(page).toContain(`for ${NUDGE_S})`);
-    // It asks the view for the video, and plays it from a blob.
+    // It asks the view for the video, and plays it from the host's URL where there is one, else from a blob.
     expect(page).toContain("cophylaMediaReady");
     expect(page).toContain("URL.createObjectURL(new Blob(d.cophylaMedia.parts");
+    expect(page).toContain('typeof d.cophylaMedia.url === "string" ? d.cophylaMedia.url');
+  });
+
+  test("a sound's player page: its name over an audio element, the same bar and script", () => {
+    const page = playerPage("<loud>.mp3", true);
+    expect(page).toContain('<audio controls preload="auto">');
+    expect(page).not.toContain("<video");
+    expect(page).toContain('<div class="name">&lt;loud&gt;.mp3</div>');
+    for (const cls of ["back", "play", "fwd", "rate", "time"]) expect(page).toContain(`class="${cls}"`);
+    const script = /<script>([\s\S]*)<\/script>/.exec(page)?.[1] ?? "";
+    expect(() => new Function(script)).not.toThrow();
+    expect(script).toContain('querySelector("video, audio")');
   });
 
   test("its script is one a browser reads, and the keys the view hands on are the ones it answers", () => {

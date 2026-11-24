@@ -4,7 +4,9 @@
 // serves this small page itself instead, on an origin the view may frame (the desktop app's
 // `doc` scheme, the node's controller listener, the phone's staged files), with a policy of its
 // own: the page's scripts run, and nothing reaches the network, submits a form, opens a window,
-// navigates the top or frames anything. It says it is ready to the frame that framed it
+// navigates the top or frames anything; a host that streams a video or a sound to the player page
+// (`media` in `host.ready`) lets media in from the one origin it serves them on, and nothing
+// else (`docFrameCsp`). It says it is ready to the frame that framed it
 // (`{cophylaDocReady}`), waits for the HTML from that frame alone (`{cophylaDoc}`, from
 // `parent`), and writes it in place of itself, once: writing a document drops every listener
 // the page had, this one with them. A page opened on its own, outside any frame, is still
@@ -38,6 +40,12 @@ export const DOC_FRAME_CSP = [
  */
 export const DOC_FRAME_META_CSP = DOC_FRAME_CSP.replace(/^sandbox [^;]*; /, "");
 
+/** The policy of a host that streams media to the player page from `mediaOrigin` (its own, e.g. `http://doc.localhost`); the plain one without. */
+export function docFrameCsp(mediaOrigin?: string, meta = false): string {
+  const csp = meta ? DOC_FRAME_META_CSP : DOC_FRAME_CSP;
+  return mediaOrigin ? csp.replace("media-src data: blob:", `media-src data: blob: ${mediaOrigin}`) : csp;
+}
+
 /** The page. */
 export const DOC_FRAME_HTML = `<!doctype html>
 <html lang="en">
@@ -57,8 +65,8 @@ parent.postMessage({ cophylaDocReady: true }, "*");
 `;
 
 /** The page with its policy in its head, for a host that sends no headers. */
-export function docFramePage(): string {
-  return DOC_FRAME_HTML.replace("<meta charset=\"utf-8\">", `<meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${DOC_FRAME_META_CSP}">`);
+export function docFramePage(mediaOrigin?: string): string {
+  return DOC_FRAME_HTML.replace("<meta charset=\"utf-8\">", `<meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${docFrameCsp(mediaOrigin, true)}">`);
 }
 
 /** The headers the page is served with, over HTTP. */

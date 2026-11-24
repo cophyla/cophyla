@@ -263,6 +263,12 @@ describe("local staging", () => {
     expect(docFramePage()).toContain(`<meta http-equiv="Content-Security-Policy" content="${DOC_FRAME_META_CSP}">`);
     expect(DOC_FRAME_META_CSP).not.toContain("sandbox");
     expect(DOC_FRAME_META_CSP).toContain("connect-src 'none'");
+    // an app that streams media to the player lets it in from its own origin, and nothing else more
+    const streaming = await stageLocally({ ...deps, mediaOrigin: "https://localhost" }, MANIFEST);
+    expect(streaming.docFrame).toBe(first.docFrame);
+    const page = fs.files.get(`DATA/views/default/v1/${DOC_FRAME_FILE}`)!;
+    expect(page).toContain("media-src data: blob: https://localhost;");
+    expect(page.replace(" https://localhost;", ";")).toBe(`text:${docFramePage()}`);
     expect(fs.files.get("DATA/views/default/v1/index.html")).toBe(`text:<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="${VIEW_CSP}"><title>x</title></head><body></body></html>`);
     expect(fs.files.get("DATA/views/default/v1/app.js")).toBe("text:console.log(1)");
     current = "v2";

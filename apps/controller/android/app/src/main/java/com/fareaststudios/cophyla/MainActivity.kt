@@ -1,10 +1,12 @@
-// The app's one activity: the Capacitor bridge with the socket and stream plugins registered, the staged
-// views served to their frame (`ViewFiles`), and the microphone handed to the page once the
-// runtime permission is granted.
+// The app's one activity: the Capacitor bridge with the socket, stream and media plugins registered, the
+// staged views served to their frame (`ViewFiles`), the media a view plays served to its player
+// (`MediaFiles`, before the views), and the microphone handed to the page once the runtime
+// permission is granted.
 package com.fareaststudios.cophyla
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
 import android.os.Bundle
 import android.webkit.PermissionRequest
 import android.webkit.WebResourceRequest
@@ -20,11 +22,21 @@ class MainActivity : BridgeActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         registerPlugin(CophylaSocketPlugin::class.java)
         registerPlugin(CophylaStreamPlugin::class.java)
+        registerPlugin(CophylaMediaPlugin::class.java)
         super.onCreate(savedInstanceState)
-        val views = ViewFiles(filesDir, bridge.host)
+        val host = bridge.host
+        val views = ViewFiles(filesDir, host)
+        val media = (bridge.getPlugin("CophylaMedia")?.instance as? CophylaMediaPlugin)?.media
         bridge.setWebViewClient(object : BridgeWebViewClient(bridge) {
+            // off the UI thread: a media request may wait here for its first piece
             override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? =
-                views.serve(request.method, request.url) ?: super.shouldInterceptRequest(view, request)
+                media?.serve(request, host) ?: views.serve(request.method, request.url) ?: super.shouldInterceptRequest(view, request)
+
+            // a page loaded afresh knows none of the streams the last one opened
+            override fun onPageStarted(view: WebView, url: String?, favicon: Bitmap?) {
+                super.onPageStarted(view, url, favicon)
+                media?.closeAll()
+            }
         })
         // `getUserMedia` inside the page is granted once the app holds RECORD_AUDIO; the app asks for it as it starts listening
         bridge.webView.webChromeClient = object : BridgeWebChromeClient(bridge) {

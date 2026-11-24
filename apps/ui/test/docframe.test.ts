@@ -14,6 +14,7 @@ describe("the desktop's document frame", () => {
   test("serves the protocol's page, under its policy, at its path", () => {
     expect(readFileSync(join(SRC, "docframe.html"), "utf8").replace(/\r\n/g, "\n")).toBe(DOC_FRAME_HTML);
     const rust = readFileSync(join(SRC, "docframe.rs"), "utf8");
+    // the protocol's policy; the page is answered with the media server's origin added to it (media.rs)
     expect(rust).toContain(`pub const CSP: &str = "${DOC_FRAME_CSP}";`);
     expect(rust).toContain(`pub const PATH: &str = "${DOC_FRAME_PATH}";`);
   });

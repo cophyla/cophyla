@@ -76,6 +76,8 @@ export interface ViewHostDeps {
   embed?: boolean;
   /** The host opens web tabs beside agents' chats and lays them over the view (`host.webtab`, through `host`): the desktop app on Windows. */
   webTabs?: boolean;
+  /** The host streams videos and sounds to the view's player (`host.media`, through `host`; media.ts): the desktop app, the phone app. */
+  media?: boolean;
   /** The view's document went: replaced, or reloaded by the view itself. What the host laid over it goes. */
   onUnmount?: () => void;
   /** The picker or the settings opened (`true`) or both are closed again: what the host laid over the view hides meanwhile. */
@@ -276,6 +278,7 @@ export class ViewHost {
         ...(staged.docFrame ? { docFrame: staged.docFrame } : {}),
         ...(this.deps.embed ? { embed: true } : {}),
         ...(this.deps.webTabs ? { webTabs: true } : {}),
+        ...(this.deps.media ? { media: true } : {}),
         ...(this.deps.desk ? { desk: true } : {}),
         prefs: prefsStore(this.deps.store ?? pageStorage(), manifest.id),
       },

@@ -3,7 +3,8 @@
 // starts cophylad when none is listening and never stops it, hosts views in a sandboxed frame
 // on their own origin, puts asks on OS notifications while it is not in front (and takes
 // them down when it comes to the front), names the files dropped on a view from the desktop
-// (dropped.rs), and lives in the tray when the
+// (dropped.rs), serves the videos and sounds its document frame plays from a loopback server,
+// their pieces fetched by the host page and kept on disk (media.rs), and lives in the tray when the
 // window is closed (on macOS the Dock icon goes with the window: it is there while the
 // window is, and a click on it in the Dock or the Finder shows the window again). Its host
 // page hears the wake words and the talk key, and speaks the replies (voice.rs).
@@ -17,6 +18,7 @@ mod dropped;
 mod idle;
 mod install;
 mod links;
+mod media;
 mod memory;
 mod notify;
 mod cophylad;
@@ -161,8 +163,10 @@ fn main() {
         .manage(views::Staged::default())
         .register_uri_scheme_protocol(views::SCHEME, views::handle)
         .register_uri_scheme_protocol(docframe::SCHEME, docframe::handle)
-        .invoke_handler(tauri::generate_handler![commands::cophylad_attach, commands::cophylad_send, commands::view_stage, commands::notify_ask, commands::dismiss_ask, commands::user_idle_ms, dropped::dropped_paths, stream::stream_open, stream::stream_embed, stream::stream_place, stream::stream_close, webtab::webtab_open, webtab::webtab_place, webtab::webtab_go, webtab::webtab_close, links::open_link, voice::ptt_shortcut])
+        .invoke_handler(tauri::generate_handler![commands::cophylad_attach, commands::cophylad_send, commands::view_stage, commands::notify_ask, commands::dismiss_ask, commands::user_idle_ms, dropped::dropped_paths, stream::stream_open, stream::stream_embed, stream::stream_place, stream::stream_close, webtab::webtab_open, webtab::webtab_place, webtab::webtab_go, webtab::webtab_close, links::open_link, voice::ptt_shortcut, media::media_open, media::media_close, media::media_stats])
         .setup(move |app| {
+            // listening before the window, whose document frame's policy names its origin
+            app.manage(media::Media::for_app(app.handle()));
             notify::register(app.handle(), install.as_ref());
             let dev_origin = views::dev_origin(app.handle());
             let builder = WebviewWindowBuilder::new(app, cophylad::HOST_LABEL, WebviewUrl::App("index.html".into()));

@@ -9,6 +9,8 @@
 // (webtabs.ts, `host.webtab`); a link clicked in a view (`host.openLink`) opens in the system browser. Where the files a
 // view had dropped on it from the desktop are (`host.filePaths`) the shell says, from the drop
 // it saw pass into the page (dropped.rs); on Windows the view asks WebView2 for them instead.
+// A video or a sound the view plays streams from the shell (media.ts, `host.media`), its pieces
+// read over this page's connection.
 // Voice is voice.ts: the microphone, the wake words, the talk key and the speaker, and its
 // section in Settings. For where the node reads replies out, the page says whether the window
 // is in front and shown (`voice.presence`), on every connect and as that changes; focus moving
@@ -18,11 +20,12 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { ViewContent } from "@cophyla/protocol";
-import { AskNotifier, checkWords, Connection, MentionNotifier, NoteNotifier, SnapshotCache, UpdateChecker, ViewHost } from "@cophyla/viewhost";
+import { AskNotifier, checkWords, Connection, MediaHost, MentionNotifier, NoteNotifier, SnapshotCache, UpdateChecker, ViewHost } from "@cophyla/viewhost";
 import type { Activated, LinkSnapshot, TauriIo } from "@cophyla/viewhost";
 import { StreamWindows } from "./open.ts";
 import { DesktopVoice } from "./voice.ts";
 import { WebTabs, webTabsHere } from "./webtabs.ts";
+import { shellMedia } from "./media.ts";
 import type { ShellState } from "./webtabs.ts";
 
 const io: TauriIo = {
@@ -69,8 +72,12 @@ const webTabs = new WebTabs({
   frame: () => viewEl.querySelector("iframe")?.getBoundingClientRect(),
   log: (m) => console.warn(m),
 });
-/** The host's own requests a view may make: a web tab's, and the streams'. */
-const hostRequests = (method: string, params: unknown): Promise<unknown> => (method === "host.webtab" ? webTabs.host(method, params) : streams.host(method, params));
+// A video or a sound streams to the view's player from the shell's server on the loopback, its
+// pieces read by the shell itself; a file on another computer is kept on this one, and one on
+// this computer is not.
+const media = new MediaHost({ native: shellMedia(io), request: (method, params) => conn.request(method, params), here: () => conn.state.hello?.client.node, log: (m) => console.warn(m) });
+/** The host's own requests a view may make: a web tab's, a stream's of media, and the streams'. */
+const hostRequests = (method: string, params: unknown): Promise<unknown> => (method === "host.webtab" ? webTabs.host(method, params) : method === "host.media" ? media.host(method, params) : streams.host(method, params));
 // Check for updates, from the tray and the settings' Updates page: what the node found comes
 // back as a notification (no buttons; a click shows the window), and so does a release it found
 // that finished downloading.
@@ -98,6 +105,7 @@ const viewhost = new ViewHost({
   embed: true,
   // a web tab laid over it likewise, hidden under the host's layers and until the next document places it
   ...(webTabsOn ? { webTabs: true } : {}),
+  media: true,
   onOverlay: (open) => {
     streams.overlay(open);
     webTabs.overlay(open);

@@ -623,7 +623,7 @@ export class NodeServer {
     if (!files) throw new RpcError("unsupported", "this node lists no files");
     const parsed = clientRequests[method].params.safeParse(params ?? {});
     if (!parsed.success) throw new RpcError("invalid", `bad params for ${method}`, parsed.error.issues);
-    const p = parsed.data as { id: string; dirs?: string[]; path?: string; image?: true; whole?: true; at?: number; log?: number };
+    const p = parsed.data as { id: string; dirs?: string[]; path?: string; image?: true; whole?: true; at?: number; stream?: true; log?: number };
     const c = this.confined();
     const cwd = this.deps.local?.session(p.id)?.cwd;
     c?.require(cwd, "that session");
@@ -635,7 +635,7 @@ export class NodeServer {
     const redactResult = method === "session.files" ? (r: unknown) => listingSummary(r as FilesResult) : method === "session.file" ? (r: unknown) => fileSummary(r as FileText) : undefined;
     return this.gated({ principal: this.deps.principal, action: method, args: p, target: p.id, sessionKey: this.deps.sessionKey, ...(redactResult ? { redactResult } : {}) }, async () => {
       if (method === "session.files") return files.list(p.id, p.dirs);
-      if (method === "session.file") return files.read(p.id, p.path ?? "", { image: p.image === true, whole: p.whole === true, ...(p.at !== undefined ? { at: p.at } : {}) });
+      if (method === "session.file") return files.read(p.id, p.path ?? "", { image: p.image === true, whole: p.whole === true, ...(p.at !== undefined ? { at: p.at } : {}), ...(p.stream === true ? { stream: true } : {}) });
       const git = await files.git(p.id, p.log);
       return git ? { git } : {};
     });
@@ -659,7 +659,7 @@ export class NodeServer {
     if (refused) throw refused;
     const parsed = clientRequests[method].params.safeParse(params ?? {});
     if (!parsed.success) throw new RpcError("invalid", `bad params for ${method}`, parsed.error.issues);
-    const p = parsed.data as { terminal?: string; input?: boolean; drive?: { cols: number; rows: number }; end?: boolean; argv?: string[]; path?: string; image?: true; whole?: true; at?: number; files?: true };
+    const p = parsed.data as { terminal?: string; input?: boolean; drive?: { cols: number; rows: number }; end?: boolean; argv?: string[]; path?: string; image?: true; whole?: true; at?: number; stream?: true; files?: true };
     let viewer = "";
     if (method === "terminal.open" || method === "terminal.close") {
       const client = ClientId.safeParse((params as { client?: unknown } | undefined)?.client);
@@ -684,7 +684,7 @@ export class NodeServer {
             await t!.streams.close(viewer, p.terminal!, p.end === true);
             return {};
           case "terminal.file": {
-            const opts = { image: p.image === true, whole: p.whole === true, ...(p.at !== undefined ? { at: p.at } : {}) };
+            const opts = { image: p.image === true, whole: p.whole === true, ...(p.at !== undefined ? { at: p.at } : {}), ...(p.stream === true ? { stream: true } : {}) };
             if (reader) return reader(p.path ?? "", opts);
             const row = t!.rows.list().find((r) => r.id === p.terminal);
             if (!row) throw new RpcError("not_found", `no terminal ${p.terminal}`);

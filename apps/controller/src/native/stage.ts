@@ -10,7 +10,8 @@
 // since a new platform may turn the same sources into other files. Beside each version the
 // document frame is written too (@cophyla/protocol's docframe.ts), its policy in its head since
 // these files come with no headers, for the view to run an HTML file's scripts in: the view's
-// own policy lets it frame its siblings.
+// own policy lets it frame its siblings. Written each time a version is loaded, it lets media in
+// from the app's own origin, where the app streams a video or a sound to the player (media.ts).
 
 import { DOC_FRAME_FILE, docFramePage } from "@cophyla/protocol";
 import type { ViewContent, ViewManifest } from "@cophyla/protocol";
@@ -53,6 +54,8 @@ export interface StageDeps {
   get: (id: string) => Promise<ViewContent>;
   /** The platform version of the node serving the view, from its hello. */
   platform?: string;
+  /** The app's own origin, where it streams media to the view's player: the document frame lets media in from there. */
+  mediaOrigin?: string;
 }
 
 const versionDir = (id: string, version: string): string => `${VIEWS_ROOT}/${safe(id)}/${safe(version)}`;
@@ -82,7 +85,7 @@ export async function stageLocally(deps: StageDeps, manifest: ViewManifest): Pro
 
 /** Where the frame loads a written version from, the document frame written beside it (a version written by an older app has none). */
 async function located(deps: StageDeps, dir: string, version: string): Promise<Staged> {
-  await deps.fs.writeFile({ path: `${dir}/${DOC_FRAME_FILE}`, data: docFramePage(), directory: VIEWS_DIRECTORY, encoding: "utf8", recursive: true });
+  await deps.fs.writeFile({ path: `${dir}/${DOC_FRAME_FILE}`, data: docFramePage(deps.mediaOrigin), directory: VIEWS_DIRECTORY, encoding: "utf8", recursive: true });
   const { uri } = await deps.fs.getUri({ path: dir, directory: VIEWS_DIRECTORY });
   const base = `${deps.fileUrl(uri)}/`;
   return { base, version, docFrame: `${base}${DOC_FRAME_FILE}` };

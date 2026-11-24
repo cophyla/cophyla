@@ -280,7 +280,7 @@ export function fileMethods(deps: FileMethodDeps): MethodTable {
     "session.file": {
       target: (p) => p.id,
       redactResult: (r) => fileSummary(r),
-      handler: (p) => deps.files.read(p.id, p.path, { image: p.image === true, whole: p.whole === true, ...(p.at !== undefined ? { at: p.at } : {}) }),
+      handler: (p) => deps.files.read(p.id, p.path, { image: p.image === true, whole: p.whole === true, ...(p.at !== undefined ? { at: p.at } : {}), ...(p.stream === true ? { stream: true } : {}) }),
     },
     "session.reveal": {
       target: (p) => p.id,
@@ -986,7 +986,7 @@ export function terminalMethods(deps: TerminalDeps): MethodTable {
       redactResult: (r) => fileSummary(r),
       handler: (p) => {
         if (!deps.files) throw new RpcError("unsupported", "this node reads no files");
-        const opts = { image: p.image === true, whole: p.whole === true, ...(p.at !== undefined ? { at: p.at } : {}) };
+        const opts = { image: p.image === true, whole: p.whole === true, ...(p.at !== undefined ? { at: p.at } : {}), ...(p.stream === true ? { stream: true } : {}) };
         if (p.terminal === undefined) return deps.files.readAt(p.path, opts);
         const row = deps.rows?.list().find((t) => t.id === p.terminal);
         if (!row) throw new RpcError("not_found", `no terminal ${p.terminal}`);

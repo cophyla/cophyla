@@ -603,9 +603,11 @@ export type FileText = z.infer<typeof FileText>;
 /**
  * What a viewer asks of a file: its path under the folder, `/` between the names, whether an
  * image is to come whole (as an older node reads it), and whether the file is to come as its
- * bytes (`whole`), the piece starting `at` bytes in.
+ * bytes (`whole`), the piece starting `at` bytes in; `stream`, for a player that asks only for
+ * the pieces it plays: a video or a sound of any size comes (an older node sends none past
+ * 256 MiB, and says it is binary).
  */
-const FileAsk = { path: z.string().min(1).max(4096), image: z.literal(true).optional(), whole: z.literal(true).optional(), at: z.number().int().nonnegative().optional() };
+const FileAsk = { path: z.string().min(1).max(4096), image: z.literal(true).optional(), whole: z.literal(true).optional(), at: z.number().int().nonnegative().optional(), stream: z.literal(true).optional() };
 
 /**
  * A session, a workspace and a thread as a client gets them: without the summary and tags

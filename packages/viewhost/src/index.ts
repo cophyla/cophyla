@@ -4,7 +4,8 @@
 // view to its manifest's scopes over postMessage; a `ViewHost` loads the default view into a
 // sandboxed frame and reloads it when it changes; a `ViewChooser` is the host's view picker
 // over it and a `SettingsPanel` its settings; an `AskNotifier` toasts asks, a `MentionNotifier`
-// tags of the user, and a `NoteNotifier` the notes agents leave them. DOM-free except
+// tags of the user, and a `NoteNotifier` the notes agents leave them; a `MediaHost` feeds the
+// pieces of a streamed video or sound to the host's native side. DOM-free except
 // `ViewHost`, which owns the frame, and `ViewChooser` and `SettingsPanel`, which draw.
 
 export * from "./connection.ts";
@@ -18,3 +19,4 @@ export * from "./mentions.ts";
 export * from "./notes.ts";
 export * from "./updates.ts";
 export * from "./place.ts";
+export * from "./media.ts";

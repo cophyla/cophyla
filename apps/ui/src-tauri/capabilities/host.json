@@ -29,6 +29,9 @@
     "allow-webtab-go",
     "allow-webtab-close",
     "allow-open-link",
-    "allow-ptt-shortcut"
+    "allow-ptt-shortcut",
+    "allow-media-open",
+    "allow-media-close",
+    "allow-media-stats"
   ]
 }

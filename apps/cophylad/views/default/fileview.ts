@@ -32,10 +32,15 @@
 // the next, any case unless Aa is on. The view reads the file again as the agent works and when
 // the window comes back, and the viewer keeps its place and its search.
 //
-// A video comes whole the same way, a piece at a time, and plays in the document frame
-// (videoplayer.ts), since the view's own policy lets no media in: its bytes go to the player as
-// they came, never as one string of base64, and the browser's controls are beside buttons and
-// keys for play, pause, back and forward. A host with no document frame plays none, and says so.
+// A video or a sound plays in the document frame (videoplayer.ts), since the view's own policy
+// lets no media in, the browser's controls beside buttons and keys for play, pause, back and
+// forward. A host that streams media (`media` in `host.ready`) serves it to the player from a
+// URL of its own (`host.media`, @cophyla/viewhost's media.ts), so it plays as it comes, seeks
+// as it plays and plays again from the device; the viewer reads only the file's size and when
+// it changed, and opens the stream again when it changes. Anywhere else, or should the player
+// never reach the host's URL, it comes whole as an image does, a piece at a time, and its bytes
+// go to the player as they came, never as one string of base64. A host with no document frame
+// plays none, and says so.
 //
 // A file no agent's or terminal's folder holds is read from its computer by its full path
 // (`terminal.file` with no terminal), and a folder of those shows as what it holds
@@ -44,7 +49,7 @@
 
 import type { FileText, FolderPick } from "@cophyla/protocol";
 import { renderText } from "./markdown.ts";
-import { bytesOf, fileErrorWords, fileLanguage, fileLines, fileSizeWords, findInLines, findPattern, findWords, FIND_MAX, folderMeta, fullRel, grammarName, headingAnchors, imageKind, isHtml, isPdf, joinPath, linesBetween, readsWhole, resolveRel, videoKind, viewerMeta, viewerNote } from "./model.ts";
+import { bytesOf, fileErrorWords, fileLanguage, fileLines, fileSizeWords, findInLines, findPattern, findWords, FIND_MAX, folderMeta, fullRel, grammarName, headingAnchors, imageKind, isHtml, isPdf, joinPath, linesBetween, mediaKind, readsWhole, resolveRel, viewerMeta, viewerNote } from "./model.ts";
 import type { ViewerDock, ViewerSource } from "./model.ts";
 import { inlineDocument } from "./htmldoc.ts";
 import { PLAYER_KEYS, playerPage } from "./videoplayer.ts";
@@ -104,6 +109,10 @@ export interface ViewerOptions {
   connected: boolean;
   /** Where the host serves the document frame an HTML file's scripts run in; none on an older host. */
   docFrame?: string;
+  /** The host streams videos and sounds to the player (`host.media`): the desktop app, the phone app. */
+  media?: boolean;
+  /** The node the file is on, when the view knows it: the host keeps a file of another computer's on the device. */
+  node?: string;
 }
 
 /** A page made whole to be drawn (htmldoc.ts), or why it could not be read. */
@@ -116,12 +125,21 @@ interface DocFrame {
   sent: boolean;
 }
 
-/** A video playing in the document frame: the frame, the player page, and the video's bytes for the player once it is ready. */
+/** A video or a sound for its player: where the host streams it (its URL, and the stream's id), or its bytes read whole. */
+interface Clip {
+  key: string;
+  url?: string;
+  stream?: string;
+  parts?: Uint8Array[];
+}
+
+/** A video or a sound playing in the document frame: the frame, the player page, and what the player gets once it is ready. */
 interface MediaFrame {
   frame: HTMLIFrameElement;
   html: string;
-  parts: Uint8Array[];
+  clip: Clip;
   type: string;
+  audio: boolean;
 }
 
 /** The CSS Custom Highlight API, where the engine has it: search marks without touching the page. */
@@ -279,9 +297,11 @@ export class FileViewer {
   private pendingLine?: number;
   /** An image's size in pixels, once drawn. */
   private pixels?: { width: number; height: number };
-  /** A video read whole, by the file's key, its bytes as they came; the frame it plays in; how long it runs, once the player knows. */
-  private clip?: { key: string; parts: Uint8Array[] };
+  /** A video or a sound for its player, by the file's key; the frame it plays in; how long it runs, once the player knows. */
+  private clip?: Clip;
   private media?: MediaFrame;
+  /** The host's streams never reached the player here: media is read whole from now on. */
+  private streamOff = false;
   private seconds?: number;
   /** A PDF drawn, and how many pages it has; a click on it waiting to see whether a second follows. */
   private pdf?: PdfView;
@@ -513,7 +533,7 @@ export class FileViewer {
       this.drawn = undefined;
       this.pixels = undefined;
       this.pages = undefined;
-      this.clip = undefined;
+      this.dropClip();
       this.seconds = undefined;
       this.clearMatches();
       this.setBody();
@@ -553,7 +573,7 @@ export class FileViewer {
     this.drawn = undefined;
     this.pixels = undefined;
     this.pages = undefined;
-    this.clip = undefined;
+    this.dropClip();
     this.seconds = undefined;
     clearTimeout(this.fitTimer);
     this.closeFind(false);
@@ -590,18 +610,27 @@ export class FileViewer {
     try {
       // A computer's folder, asked for as one or found to be one, shows as what it holds.
       if ("node" in target.from && (target.folder || this.folders.has(keyOf(target)))) return await this.loadFolder(target, target.from.node, generation);
-      // A video comes whole as its bytes, for its player; read again, only when it changed.
-      if (videoKind(target.rel) !== undefined) {
-        const read = await this.readVideo(target, again, (p) => {
-          if (generation !== this.generation) return;
-          this.progress = p;
-          this.update();
-        });
-        if (generation !== this.generation) return;
+      // A video or a sound streams to its player from the host, or comes whole as its bytes; read again, only when it changed.
+      const media = mediaKind(target.rel);
+      if (media !== undefined) {
+        const read = this.streams()
+          ? await this.openStream(target, again, media.type)
+          : await this.readMedia(target, again, (p) => {
+              if (generation !== this.generation) return;
+              this.progress = p;
+              this.update();
+            });
+        if (generation !== this.generation) {
+          if (read.clip?.stream) this.closeStream(read.clip.stream);
+          return;
+        }
         this.error = undefined;
         this.file = read.file;
         this.lines = [];
-        if (read.parts) this.clip = { key: keyOf(target), parts: read.parts };
+        if (read.clip) {
+          this.dropClip();
+          this.clip = read.clip;
+        }
         this.loading = false;
         this.progress = undefined;
         this.update();
@@ -650,9 +679,49 @@ export class FileViewer {
 
   /** One ask of a file, through what the viewer reads it through: an agent's session, a bare terminal, or a computer, by the file's full path. */
   private request(from: ViewerSource, ask: Record<string, unknown>): Promise<FileText> {
-    if ("session" in from) return this.rpc.request<FileText>("session.file", { id: from.session, ...ask });
-    if ("terminal" in from) return this.rpc.request<FileText>("terminal.file", { terminal: from.terminal, ...ask });
-    return this.rpc.request<FileText>("terminal.file", { node: from.node, ...ask });
+    const read = this.readOf(from, "");
+    return this.rpc.request<FileText>(read.method, { ...read.params, ...ask });
+  }
+
+  /** The read a file is asked for with, as the host's stream makes it too. */
+  private readOf(from: ViewerSource, path: string): { method: "session.file" | "terminal.file"; params: Record<string, string> } {
+    const at: Record<string, string> = path === "" ? {} : { path };
+    if ("session" in from) return { method: "session.file", params: { id: from.session, ...at } };
+    if ("terminal" in from) return { method: "terminal.file", params: { terminal: from.terminal, ...at } };
+    return { method: "terminal.file", params: { node: from.node, ...at } };
+  }
+
+  /** Whether a video or a sound streams from the host here. */
+  private streams(): boolean {
+    return this.opts?.media === true && this.opts.docFrame !== undefined && !this.streamOff;
+  }
+
+  /**
+   * A video or a sound opened where the host streams it: only its size and when it changed are
+   * read here (a file that is not text says no more), and the player is given the host's URL;
+   * read again, a file that has not changed keeps the stream it had.
+   */
+  private async openStream(target: ViewerTarget, again: boolean, type: string): Promise<{ file: FileText; clip?: Clip }> {
+    const head = await this.request(target.from, { path: target.rel });
+    const had = this.file;
+    if (again && had && this.clip?.url !== undefined && this.clip.key === keyOf(target) && head.modified === had.modified && head.size === had.size) return { file: had };
+    const name = target.rel.slice(target.rel.lastIndexOf("/") + 1) || target.rel;
+    const node = this.opts?.node;
+    const opened = await this.rpc.request<{ id: string; url: string }>("host.media", { op: "open", read: this.readOf(target.from, target.rel), size: head.size, modified: head.modified, mime: type, name, ...(node ? { node } : {}) });
+    // the file shows as played whole: nothing of it is said to be missing
+    const { text: _text, truncated: _cut, ...file } = head;
+    return { file: { ...file, base64: "" }, clip: { key: keyOf(target), url: opened.url, stream: opened.id } };
+  }
+
+  /** The clip goes, and the host's stream with it. */
+  private dropClip(): void {
+    const stream = this.clip?.stream;
+    this.clip = undefined;
+    if (stream) this.closeStream(stream);
+  }
+
+  private closeStream(id: string): void {
+    void this.rpc.request("host.media", { op: "close", id }).catch(() => undefined);
   }
 
   /** A computer's folder read and shown as what it holds, unless another file was asked for meanwhile; what goes wrong is the load's to say. */
@@ -734,18 +803,18 @@ export class FileViewer {
   }
 
   /**
-   * A video's bytes, each piece decoded as it comes, so no string of all its base64 is ever made;
-   * read again (`again`), a video that has not changed since keeps the bytes it had. The file it
-   * gives says it came whole (`base64` empty) when it did; `parts` is none when nothing changed,
-   * or when it did not come whole (too big, an older node).
+   * A video's or a sound's bytes, each piece decoded as it comes, so no string of all its base64
+   * is ever made; read again (`again`), one that has not changed since keeps the bytes it had.
+   * The file it gives says it came whole (`base64` empty) when it did; `clip` is none when nothing
+   * changed, or when it did not come whole (too big, an older node).
    */
-  private async readVideo(target: ViewerTarget, again: boolean, progress: (share: number) => void): Promise<{ file: FileText; parts?: Uint8Array[] }> {
+  private async readMedia(target: ViewerTarget, again: boolean, progress: (share: number) => void): Promise<{ file: FileText; clip?: Clip }> {
     const first = await this.request(target.from, { path: target.rel, whole: true, image: true });
     const had = this.file;
-    if (again && had && this.clip?.key === keyOf(target) && first.modified === had.modified && first.size === had.size) return { file: had };
+    if (again && had && this.clip?.parts !== undefined && this.clip.key === keyOf(target) && first.modified === had.modified && first.size === had.size) return { file: had };
     const read = await this.readPieces(target.from, target.rel, (b64) => bytesOf(b64), progress, first);
     if (!read.pieces) return { file: read.first };
-    return { file: { ...read.first, base64: "" }, parts: read.pieces };
+    return { file: { ...read.first, base64: "" }, clip: { key: keyOf(target), parts: read.pieces } };
   }
 
   /** The head and the note, from what is known: cheap, so every draw calls it. */
@@ -815,13 +884,13 @@ export class FileViewer {
     const paint = ++this.paints;
     if (file.text === undefined || readsWhole(target.rel)) {
       if (isPdf(target.rel) && file.base64 !== undefined) return this.paintPdf(want, paint, file.base64);
-      const video = videoKind(target.rel);
-      if (video !== undefined) {
+      const media = mediaKind(target.rel);
+      if (media !== undefined) {
         this.painting = undefined;
         this.drawn = want;
         this.clearMatches();
         const clip = this.clip?.key === want.key ? this.clip : undefined;
-        this.setBody(...(clip ? [this.player(target, clip.parts, video.type)] : []));
+        this.setBody(...(clip ? [this.player(target, clip, media)] : []));
         return;
       }
       this.painting = undefined;
@@ -963,15 +1032,16 @@ export class FileViewer {
   }
 
   /**
-   * A video's player, in the document frame the host serves: the frame is given the player page
-   * each time it says it is ready (a frame moved to another place loads again), and the player
-   * the video's bytes once it asks. A host that serves no frame plays none, and says so.
+   * A video's or a sound's player, in the document frame the host serves: the frame is given the
+   * player page each time it says it is ready (a frame moved to another place loads again), and
+   * the player the host's URL or the bytes once it asks. A host that serves no frame plays none,
+   * and says so.
    */
-  private player(target: ViewerTarget, parts: Uint8Array[], type: string): HTMLElement {
-    const box = el("div", "viewer-html viewer-video");
+  private player(target: ViewerTarget, clip: Clip, media: { type: string; audio: boolean }): HTMLElement {
+    const box = el("div", media.audio ? "viewer-html viewer-video viewer-audio" : "viewer-html viewer-video");
     const docFrame = this.opts?.docFrame;
     if (!docFrame) {
-      this.drawNote = "This app plays no videos: update it to play them here.";
+      this.drawNote = media.audio ? "This app plays no audio files: update it to play them here." : "This app plays no videos: update it to play them here.";
       this.update();
       return box;
     }
@@ -982,7 +1052,7 @@ export class FileViewer {
     frame.setAttribute("allow", "fullscreen; autoplay");
     frame.allowFullscreen = true;
     box.append(frame);
-    this.media = { frame, html: playerPage(name), parts, type };
+    this.media = { frame, html: playerPage(name, media.audio), clip, type: media.type, audio: media.audio };
     frame.src = docFrame;
     return box;
   }
@@ -993,14 +1063,37 @@ export class FileViewer {
     const win = media.frame.contentWindow;
     if (!d || !win) return;
     if (d.cophylaDocReady === true) win.postMessage({ cophylaDoc: media.html }, "*");
-    else if (d.cophylaMediaReady === true) win.postMessage({ cophylaMedia: { parts: media.parts, type: media.type } }, "*");
+    else if (d.cophylaMediaReady === true) win.postMessage({ cophylaMedia: media.clip.url !== undefined ? { url: media.clip.url } : { parts: media.clip.parts, type: media.type } }, "*");
     else if (d.cophylaMediaInfo) {
       const info = d.cophylaMediaInfo;
+      if (typeof info.error === "string" && media.clip.stream !== undefined) return void this.streamFailed(media, info.error.slice(0, 300));
       if (typeof info.error === "string") this.drawNote = info.error.slice(0, 300);
       if (typeof info.width === "number" && typeof info.height === "number" && info.width > 0) this.pixels = { width: info.width, height: info.height };
       if (typeof info.duration === "number" && Number.isFinite(info.duration)) this.seconds = info.duration;
       this.update();
     } else if (d.cophylaMediaKey === "Escape") this.el.querySelector<HTMLButtonElement>('[data-action="viewer-close"]')?.click();
+  }
+
+  /**
+   * The player found nothing to play at the host's URL: where the host answered none of its
+   * requests, the engine never reached it, and the file is read whole from now on; else the
+   * piece the host could not read says why, or the player does.
+   */
+  private async streamFailed(media: MediaFrame, words: string): Promise<void> {
+    const id = media.clip.stream!;
+    const stats = await this.rpc.request<{ requests?: number; error?: string }>("host.media", { op: "stats", id }).catch(() => undefined);
+    if (this.media !== media) return;
+    if (stats?.requests === 0 && !this.streamOff) {
+      this.streamOff = true;
+      this.dropClip();
+      this.file = undefined;
+      this.drawn = undefined;
+      this.setBody();
+      void this.load(false);
+      return;
+    }
+    this.drawNote = stats?.error ? `This ${media.audio ? "audio file" : "video"} could not be read from its computer: ${stats.error}.`.slice(0, 300) : words;
+    this.update();
   }
 
   /** The page made whole, into the document frame that said it is ready, once. */

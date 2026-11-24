@@ -17,7 +17,7 @@ import { RpcError } from "@cophyla/protocol";
 import type { GitState } from "@cophyla/protocol";
 import { ConvertError, convertKind, systemConverter } from "../src/sessions/convert.ts";
 import type { ImageConverter } from "../src/sessions/convert.ts";
-import { decodeText, fileSummary, findGit, folderParts, imageMime, isVideo, parseGitLog, parseGitStatus, SessionFiles, VIDEO_MAX, WHOLE_CHUNK, WHOLE_MAX, wholeMime } from "../src/sessions/files.ts";
+import { decodeText, fileSummary, findGit, folderParts, imageMime, isMedia, isVideo, parseGitLog, parseGitStatus, SessionFiles, VIDEO_MAX, WHOLE_CHUNK, WHOLE_MAX, wholeMime } from "../src/sessions/files.ts";
 import type { GitRunner } from "../src/sessions/files.ts";
 import { systemRevealer } from "../src/sessions/reveal.ts";
 import type { Revealer } from "../src/sessions/reveal.ts";
@@ -322,6 +322,27 @@ describe("a file read whole", () => {
     expect([wholeMime("a.m4v"), wholeMime("a.mkv"), wholeMime("a.ogv"), wholeMime("a.webm")]).toEqual(["video/mp4", "video/x-matroska", "video/ogg", "video/webm"]);
     expect([isVideo("x/clip.MP4"), isVideo("clip.mp4.txt"), isVideo("song.mp3")]).toEqual([true, false, false]);
     expect(VIDEO_MAX).toBeGreaterThan(WHOLE_MAX);
+  });
+
+  test("a sound comes whole as a video does; a player that streams gets pieces of a video or a sound of any size, and nothing else past its most", async () => {
+    const root = temp();
+    writeFileSync(join(root, "song.mp3"), Buffer.alloc(30, 3));
+    writeFileSync(join(root, "long.flac"), Buffer.alloc(50, 4));
+    writeFileSync(join(root, "huge.webm"), Buffer.from(Array.from({ length: 50 }, (_, i) => i)));
+    writeFileSync(join(root, "doc.pdf"), Buffer.alloc(30));
+    const files = filesFor(root, { wholeChunk: 9, wholeMax: 20, videoMax: 40 });
+    expect(await files.read("s1", "song.mp3", { whole: true })).toMatchObject({ mime: "audio/mpeg", total: 30, at: 0 });
+    // past the most sent whole, a sound is binary to a viewer that reads it whole
+    expect(await files.read("s1", "long.flac", { whole: true })).toMatchObject({ binary: true, size: 50 });
+    expect(await files.read("s1", "long.flac", { whole: true, stream: true })).toMatchObject({ mime: "audio/flac", total: 50, at: 0 });
+    // any piece of it, far in
+    const piece = await files.read("s1", "huge.webm", { whole: true, stream: true, at: 45 });
+    expect(piece).toMatchObject({ mime: "video/webm", total: 50, at: 45 });
+    expect([...Buffer.from(piece.base64!, "base64")]).toEqual([45, 46, 47, 48, 49]);
+    // streaming lifts no other limit
+    expect(await files.read("s1", "doc.pdf", { whole: true, stream: true })).toMatchObject({ binary: true });
+    expect(["a.m4a", "a.aac", "a.wav", "a.ogg", "a.oga", "a.opus", "a.flac", "a.weba", "a.m4b"].map(wholeMime)).toEqual(["audio/mp4", "audio/aac", "audio/wav", "audio/ogg", "audio/ogg", "audio/ogg", "audio/flac", "audio/webm", "audio/mp4"]);
+    expect([isMedia("x/SONG.MP3"), isMedia("clip.mkv"), isMedia("notes.txt"), isVideo("song.mp3")]).toEqual([true, true, false, false]);
   });
 
   test("a TIFF or a HEIC comes as the PNG its codecs make, made once for all its pieces; one no codec reads says why", async () => {

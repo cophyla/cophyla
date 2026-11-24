@@ -22,8 +22,8 @@
 // talk button, the Voice section is in the settings, the audio starts at the first click, and
 // a remote desktop's page lies beside the view where the view places it.
 
-import { Connection, SnapshotCache, ViewHost, AskNotifier } from "@cophyla/viewhost";
-import type { DeviceSettings, LinkSnapshot, RpcMessage, Staged } from "@cophyla/viewhost";
+import { Connection, MediaHost, SnapshotCache, ViewHost, AskNotifier } from "@cophyla/viewhost";
+import type { DeviceSettings, LinkSnapshot, MediaNative, MediaNeed, RpcMessage, Staged } from "@cophyla/viewhost";
 import { formatKey, parseKey } from "@cophyla/protocol";
 import type { Controller, InviteBody, ViewManifest } from "@cophyla/protocol";
 import type { NotifyAsk } from "@cophyla/viewhost";
@@ -51,6 +51,8 @@ export interface AppPlatform {
   stage: (conn: Connection, manifest: ViewManifest) => Promise<Staged>;
   /** A `host.open` from a view, where the platform shows a stream its own way: the native app's dialog. */
   hostOpen?: (params: unknown) => Promise<unknown>;
+  /** Where the platform streams a video or a sound to the view's player from (`host.media`): the native app. */
+  media?: { native: MediaNative; onNeed: (listener: (need: MediaNeed) => void) => void };
   /** The page shows a stream in a frame of its own, from the node's stream port: a browser. */
   frames?: boolean;
   /** A wide window with a pointer, on a computer: the whole panel, with no bar and no Start screen. */
@@ -238,12 +240,17 @@ export function boot(platform: AppPlatform, doc: Document = document): App {
   });
 
   const hostOpen = platform.hostOpen;
+  // a video or a sound streams to the view's player where the platform serves it; each file is kept on the device
+  const media = platform.media ? new MediaHost({ native: platform.media.native, request: (method, params) => conn.request(method, params), log: (m) => console.warn(m) }) : undefined;
+  if (media) platform.media!.onNeed((need) => media.need(need));
+  const ownHost = frames ? frames.host : (method: string, params: unknown) => (method === "host.open" && hostOpen ? hostOpen(params) : Promise.reject(new Error(`no ${method}`)));
   const viewhost = new ViewHost({
     conn,
     cache,
     container: ui.view,
     stage: (manifest) => platform.stage(conn, manifest),
-    host: frames ? frames.host : (method, params) => (method === "host.open" && hostOpen ? hostOpen(params) : Promise.reject(new Error(`no ${method}`))),
+    host: (method, params) => (method === "host.media" && media ? media.host(method, params) : ownHost(method, params)),
+    ...(media ? { media: true } : {}),
     ...(platform.openLink ? { openLink: platform.openLink } : {}),
     ...(device ? { device } : {}),
     ...(desk

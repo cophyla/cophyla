@@ -1,14 +1,18 @@
-// The page a video plays in. The view's own policy lets no media in, so a video plays in the
-// document frame the host serves (docframe.ts), whose policy lets media in from `blob:` and runs
-// a page's scripts, reaching nothing: this page is written there in place of the frame's own,
-// says it is ready for the video (`{cophylaMediaReady}`), and takes its bytes from the view
-// (`{cophylaMedia: {parts, type}}`), as a blob it plays. Beside the browser's own controls (the
+// The page a video or a sound plays in. The view's own policy lets no media in, so it plays in
+// the document frame the host serves (docframe.ts), whose policy lets media in from `blob:` and
+// runs a page's scripts, reaching nothing: this page is written there in place of the frame's
+// own, says it is ready (`{cophylaMediaReady}`), and takes the media from the view: from the URL
+// a host that streams serves it on (`{cophylaMedia: {url}}`, which the frame's policy lets in on
+// that host alone; media.ts in @cophyla/viewhost), which plays as it comes and seeks as it
+// plays, or its bytes read whole (`{cophylaMedia: {parts, type}}`), as a blob. A sound shows its
+// name over the bar, where a video shows its picture. Beside the browser's own controls (the
 // bar to seek on, the volume, full screen) it has buttons a finger can find: back and forward
 // ten seconds, play or pause, and the speed. Keys do the same: Space or K plays and pauses, J
 // and L go ten seconds back and forward, the arrows five, Home and End to either end, M mutes and
 // F fills the screen; the view hands on the keys pressed while its viewer has the focus
 // (`{cophylaMediaKey}`). It tells the view how big and how long the video is once it knows
-// (`{cophylaMediaInfo}`), or that it cannot be played; Escape pressed in it is the view's.
+// (`{cophylaMediaInfo}`), or that it cannot be played, with the browser's code for why (2 the
+// network, 4 nothing it can play); Escape pressed in it is the view's.
 
 /** HTML's own escapes, for the name in the page's title. */
 function escapeHtml(text: string): string {
@@ -28,6 +32,10 @@ html, body { height: 100%; margin: 0; background: #0b0a0f; color: #e8e4f0; font:
 body { display: flex; flex-direction: column; }
 .stage { position: relative; flex: 1 1 auto; min-height: 0; display: flex; align-items: center; justify-content: center; background: #000; }
 video { width: 100%; height: 100%; object-fit: contain; outline: none; }
+.stage.sound { flex-direction: column; gap: 18px; padding: 24px; background: #0b0a0f; }
+.sound .disc { width: 96px; height: 96px; border-radius: 50%; display: flex; align-items: center; justify-content: center; background: #221f2a; border: 1px solid #34303f; color: #b48cf0; font-size: 40px; }
+.sound .name { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 15px; color: #e8e4f0; }
+audio { width: min(560px, 100%); outline: none; }
 .why { position: absolute; left: 16px; right: 16px; margin: 0; text-align: center; color: #e8a28f; }
 .bar { flex: 0 0 auto; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 6px 10px; background: #17151d; border-top: 1px solid #2a2733; }
 button, select { height: 30px; padding: 0 10px; border: 1px solid #34303f; border-radius: 6px; background: #221f2a; color: inherit; font: inherit; cursor: pointer; }
@@ -42,7 +50,8 @@ button:disabled { opacity: 0.45; cursor: default; }
 const SCRIPT = `
 (function () {
   var SKIP = ${SKIP_S}, NUDGE = ${NUDGE_S};
-  var video = document.querySelector("video");
+  var video = document.querySelector("video, audio");
+  var what = video.tagName === "AUDIO" ? "audio file" : "video";
   var play = document.querySelector(".play");
   var back = document.querySelector(".back");
   var fwd = document.querySelector(".fwd");
@@ -107,9 +116,10 @@ const SCRIPT = `
     parent.postMessage({ cophylaMediaInfo: { width: video.videoWidth, height: video.videoHeight, duration: video.duration } }, "*");
   });
   video.addEventListener("error", function () {
+    var code = video.error ? video.error.code : 0;
     why.hidden = false;
-    why.textContent = "This video cannot be played here: this app does not play the way it is encoded.";
-    parent.postMessage({ cophylaMediaInfo: { error: why.textContent } }, "*");
+    why.textContent = code === 2 ? "This " + what + " stopped coming: the connection to its computer failed." : "This " + what + " cannot be played here: this app does not play the way it is encoded.";
+    parent.postMessage({ cophylaMediaInfo: { error: why.textContent, code: code } }, "*");
   });
   addEventListener("keydown", function (ev) {
     if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
@@ -128,7 +138,7 @@ const SCRIPT = `
   addEventListener("message", function (ev) {
     if (ev.source !== parent || !ev.data) return;
     var d = ev.data;
-    if (d.cophylaMedia && !video.src) video.src = URL.createObjectURL(new Blob(d.cophylaMedia.parts, { type: d.cophylaMedia.type }));
+    if (d.cophylaMedia && !video.src) video.src = typeof d.cophylaMedia.url === "string" ? d.cophylaMedia.url : URL.createObjectURL(new Blob(d.cophylaMedia.parts, { type: d.cophylaMedia.type }));
     else if (typeof d.cophylaMediaKey === "string") press(d.cophylaMediaKey);
   });
   shown();
@@ -136,13 +146,16 @@ const SCRIPT = `
 })();
 `;
 
-/** The player page for a video named `name`, to be written in the document frame. */
-export function playerPage(name: string): string {
+/** The player page for a video named `name`, or a sound (`audio`), to be written in the document frame. */
+export function playerPage(name: string, audio = false): string {
+  const stage = audio
+    ? `<div class="stage sound"><div class="disc" aria-hidden="true">♪</div><div class="name">${escapeHtml(name)}</div><audio controls preload="auto"></audio><p class="why" hidden></p></div>`
+    : `<div class="stage"><video playsinline controls preload="auto"></video><p class="why" hidden></p></div>`;
   return `<!doctype html>
 <html lang="en">
 <head><meta charset="utf-8"><title>${escapeHtml(name)}</title><style>${STYLE}</style></head>
 <body>
-<div class="stage"><video playsinline controls preload="auto"></video><p class="why" hidden></p></div>
+${stage}
 <div class="bar">
 <button type="button" class="back" title="Back ${SKIP_S} seconds (J, or ← for ${NUDGE_S})" aria-label="Back ${SKIP_S} seconds">« ${SKIP_S}s</button>
 <button type="button" class="play" title="Play (Space or K)" aria-label="Play">▶</button>
