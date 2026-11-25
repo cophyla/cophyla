@@ -218,7 +218,10 @@ that terminal (New terminal's shell), and otherwise its process alone, leaving t
   a folder of this computer for New terminal's picker (`terminal.folders`), hidden ones left
   out, the drives as roots on Windows. Another node's terminals reach the primary's clients
   through the link (`nodes/terminals.ts`): its rows go up, what a client asks of one is
-  forwarded to it, and its output comes back to that client alone. Without tether,
+  forwarded to it, and its output comes back to that client alone. A node that shares some
+  folders alone sends up and serves the terminals started inside them, starts one for the
+  primary in a folder or a workspace inside, never its home, and lists no folder for a picker
+  (its row says `confined`, and New terminal offers its workspaces alone). Without tether,
   sessions start in a terminal window of their own as before: on a Mac iTerm2 when it is
   installed (or `[tether] window` names `terminal` or `iterm2`), else Terminal, only while
   this user owns the console, and a launcher's refusal is an error, not a window nobody sees. A Muse session cophylad starts
@@ -937,7 +940,9 @@ custom events, no viewer pairing, and it hears of no node but the primary and th
 Unless it joined with `--ask`, what `[gate.policy.node]` would ask of its primary is
 allowed (`nodes/served.ts`), a deny and `[gate.rules]` still deciding; a workspace node never.
 One joined with `--workspace` folders keeps what the primary sees and does here to them
-(`nodes/confine.ts`), which is not a sandbox. A grant revoked or run out closes its link with
+(`nodes/confine.ts`), its terminals included (judged by the folder each started in), which is
+not a sandbox: a shell or an agent session started inside reaches as far as this machine's
+user does. A grant revoked or run out closes its link with
 a sealed `node.leave {reason: revoked}`, and the node forgets the cluster. A machine's sign-in
 door (Remote desktop, above) links as the node itself with `node.join {door: true}`, only to a
 primary whose hello says `door: true`: it brings no lists, is never a backup, settles no

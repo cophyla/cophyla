@@ -554,16 +554,17 @@ export class Outbound {
 
   private sessionOf = (id: string): Session | undefined => this.deps.local?.session(id);
 
-  /** What the join carries: this node's lists, as far as the folders it shares reach, its terminals unless it shares some alone, and the transfers it receives. */
+  /** What the join carries: this node's lists, its terminals among them, as far as the folders it shares reach, and the transfers it receives. */
   private lists(): { sessions: Session[]; workspaces: Workspace[]; asks: Ask[]; terminals?: Terminal[]; transfers?: Transfer[] } {
     const sessions = this.deps.sessions();
     const workspaces = this.deps.workspaces();
     const asks = this.deps.asks();
     const c = this.confined();
-    const terminals = c ? undefined : this.deps.terminals?.()?.rows.list();
+    const rows = this.deps.terminals?.()?.rows.list();
+    const terminals = c ? rows?.filter((t) => c.contains(t.cwd)) : rows;
     const transfers = this.deps.receiving?.()?.list();
     const shown = c
-      ? { sessions: sessions.filter((s) => c.session(s)), workspaces: workspaces.filter((w) => c.workspace(w)), asks: asks.filter((a) => c.ask(a, this.sessionOf)), ...(transfers ? { transfers } : {}) }
+      ? { sessions: sessions.filter((s) => c.session(s)), workspaces: workspaces.filter((w) => c.workspace(w)), asks: asks.filter((a) => c.ask(a, this.sessionOf)), ...(terminals ? { terminals } : {}), ...(transfers ? { transfers } : {}) }
       : { sessions, workspaces, asks, ...(terminals ? { terminals } : {}), ...(transfers ? { transfers } : {}) };
     if (!this.deps.outgoing) return shown;
     return { sessions: shown.sessions.map((s) => this.out("session.state", s) as Session), workspaces: shown.workspaces.map((w) => this.out("workspace.state", w) as Workspace), asks: shown.asks.map((a) => this.out("ask.state", a) as Ask) };
@@ -576,8 +577,8 @@ export class Outbound {
     const c = this.confined();
     // A guest's own doings stay its own, and so do a confined node's: only what the primary did here goes up.
     if (name === "audit.entry") return (!this.deps.hands() && !c) || (params as AuditEntry).principal.kind === "node";
-    // A terminal reaches past any folder: a confined node's stay its own, and a workspace node runs none.
-    if (name === "terminal.state") return !c && this.deps.terminals?.() !== undefined;
+    // A confined node's terminals go up when they started inside the folders it shares, as its sessions do; a workspace node runs none.
+    if (name === "terminal.state") return this.deps.terminals?.() !== undefined && (!c || c.contains((params as Terminal).cwd));
     if (!c) return true;
     switch (name) {
       case "session.state":

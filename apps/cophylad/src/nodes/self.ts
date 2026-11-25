@@ -51,8 +51,9 @@ export function platformName(p: NodeJS.Platform = process.platform): Platform {
  * them, `voice` the voice module's loaded stages, `role` the nodes module's current role
  * (the configured one when absent), `remote` whether the desktop host serves, `via` how
  * this node reaches its primary (`relay` through the server's tunnel), `terminals`
- * whether it starts terminals for the cluster's clients, and `files` whether it sends and
- * receives transfers. A backup stays marked `backup` in either role.
+ * whether it starts terminals for the cluster's clients, `files` whether it sends and
+ * receives transfers, and `confined` whether it shares some folders alone with its primary.
+ * A backup stays marked `backup` in either role.
  */
 export function selfNode(
   identity: NodeIdentity,
@@ -68,6 +69,7 @@ export function selfNode(
   terminals = false,
   agents?: { acceptInBypass: boolean },
   files = false,
+  confined = false,
 ): Node {
   const node: Node = {
     id: identity.id,
@@ -83,6 +85,7 @@ export function selfNode(
       remote,
       brain: role === "primary",
       terminals,
+      ...(confined ? { confined: true } : {}),
       ...(agents ? { agents: { ...agents } } : {}),
       ...(files ? { files: true } : {}),
       // a leader's message goes in as its user's words; a node that shares some folders alone takes it as another agent's

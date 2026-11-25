@@ -95,8 +95,14 @@ export const NodeCapabilities = z.object({
   voice: z.object({ wake: z.boolean(), stt: z.boolean(), tts: z.boolean() }),
   remote: z.boolean(),
   brain: z.boolean(),
-  /** It starts terminals and serves them to the primary's clients: tether is on it, and it shares the whole machine. */
+  /** It starts terminals and serves them to the primary's clients: tether is on it. One that is `confined` starts and serves them inside the folders it shares alone. */
   terminals: z.boolean().optional(),
+  /**
+   * It shares some folders alone with its primary (`cophylad join --workspace`): what the
+   * primary's clients start and open there stays inside them, so a terminal starts in one of its
+   * workspaces, never in its home or a folder picked on it. Its own apps are not confined.
+   */
+  confined: z.literal(true).optional(),
   /**
    * Its agent sessions have the `cophyla-agents` server, to list and message the cluster's;
    * `acceptInBypass`: its Claude sessions that run without prompts take another agent's

@@ -2005,19 +2005,23 @@ export interface TerminalMachine {
   name: string;
   /** The computer the app runs on: a desktop app's own, never a phone's. */
   here: boolean;
+  /** It shares some folders alone with the node the view talks to: a terminal starts there in one of its workspaces, never its home or a folder picked. */
+  confined?: true;
 }
 
 /**
  * The machines New terminal offers, this computer's first, then the others' by name: the node
  * the view talks to, unless its row says it starts no terminal, and every other connected
- * node whose row says it does (one on an earlier version serves none of its terminals).
+ * node whose row says it does (one on an earlier version serves none of its terminals). The
+ * node the view talks to is never confined to this view: a node's own apps see all of it.
  */
 export function terminalMachines(state: ViewState): TerminalMachine[] {
   const here = state.client?.node;
   const out: TerminalMachine[] = [];
   for (const n of state.nodes.values()) {
-    const starts = n.id === state.node ? n.capabilities.terminals !== false : n.status === "online" && n.capabilities.terminals === true;
-    if (starts) out.push({ node: n.id, name: n.name, here: n.id === here });
+    const own = n.id === state.node;
+    const starts = own ? n.capabilities.terminals !== false : n.status === "online" && n.capabilities.terminals === true;
+    if (starts) out.push({ node: n.id, name: n.name, here: n.id === here, ...(!own && n.capabilities.confined === true ? { confined: true as const } : {}) });
   }
   // the node the view talks to, before its row came
   if (state.node !== undefined && !state.nodes.has(state.node)) out.push({ node: state.node, name: machineName(state, state.node), here: state.node === here });
@@ -2109,25 +2113,30 @@ export const MATCHES_PER_MACHINE = 12;
  * New terminal's menu, per machine that starts terminals, this computer's first: a path typed
  * into the filter, as a place of its own; the workspaces worked in last that the filter
  * leaves, more of them while it has words; the home folder, while the filter leaves it; and
- * Other folder…, always.
+ * Other folder…, always. A machine that shares some folders alone offers its workspaces and
+ * a path typed, which it judges itself, and is left out while the filter leaves none of them.
  */
 export function placeRows(state: ViewState, workspaces: Iterable<Workspace>, filter: string): MachinePlaces[] {
   const machines = terminalMachines(state);
   const list = [...workspaces];
   const typed = typedFolder(filter);
   const limit = filter.trim() !== "" ? MATCHES_PER_MACHINE : machines.length > 1 ? RECENT_PER_MACHINE : RECENT_WORKSPACES;
-  return machines.map((machine) => {
-    const places: PlaceRow[] = [];
-    if (typed !== undefined) places.push({ key: `typed:${machine.node}`, place: folderPlace(machine.node), cwd: typed, name: "Open in", hint: typed, path: typed });
-    const mine = recentWorkspaces(list, machine.node, Infinity).filter((w) => placeMatches(filter, w.name, w.path));
-    for (const w of mine.slice(0, limit)) {
-      const parent = parentFolder(w.path);
-      places.push({ key: w.id, place: w.id, name: w.name, path: w.path, ...(parent !== undefined ? { hint: parent } : {}) });
-    }
-    if (placeMatches(filter, "Home folder")) places.push({ key: homePlace(machine.node), place: homePlace(machine.node), name: "Home folder" });
-    places.push({ key: folderPlace(machine.node), place: folderPlace(machine.node), name: "Other folder…", browse: true });
-    return { machine, places };
-  });
+  return machines
+    .map((machine) => {
+      const places: PlaceRow[] = [];
+      if (typed !== undefined) places.push({ key: `typed:${machine.node}`, place: folderPlace(machine.node), cwd: typed, name: "Open in", hint: typed, path: typed });
+      const mine = recentWorkspaces(list, machine.node, Infinity).filter((w) => placeMatches(filter, w.name, w.path));
+      for (const w of mine.slice(0, limit)) {
+        const parent = parentFolder(w.path);
+        places.push({ key: w.id, place: w.id, name: w.name, path: w.path, ...(parent !== undefined ? { hint: parent } : {}) });
+      }
+      if (!machine.confined) {
+        if (placeMatches(filter, "Home folder")) places.push({ key: homePlace(machine.node), place: homePlace(machine.node), name: "Home folder" });
+        places.push({ key: folderPlace(machine.node), place: folderPlace(machine.node), name: "Other folder…", browse: true });
+      }
+      return { machine, places };
+    })
+    .filter((m) => m.places.length > 0);
 }
 
 /** Where a terminal last started from this view, as the device keeps it: one of New terminal's places, with its folder. */
@@ -2158,7 +2167,8 @@ export interface QuickPlace {
  * tab shown (a session's workspace or its own folder, a bare terminal's), else where the last
  * one started from here, else in this computer's workspace worked in last as the view knows
  * it, else in its home. A folder that is a workspace's starts as the workspace, which moves it
- * up the menu. Undefined while no machine starts terminals.
+ * up the menu. Never in the home of a machine that shares some folders alone. Undefined while
+ * no machine starts terminals.
  */
 export function quickPlace(state: ViewState, shown: { session?: string; terminal?: string }, last: LastPlace | undefined): QuickPlace | undefined {
   const machines = terminalMachines(state);
@@ -2187,15 +2197,19 @@ export function quickPlace(state: ViewState, shown: { session?: string; terminal
     if (q) return q;
   }
   if (last) {
-    const machine = last.place.startsWith("home:") ? on(last.place.slice(5)) : undefined;
+    const home = last.place.startsWith("home:") ? on(last.place.slice(5)) : undefined;
+    // a machine that shares some folders alone starts no shell in its home
+    const machine = home?.confined ? undefined : home;
     const q = machine
       ? { place: last.place, machine }
-      : last.place.startsWith("folder:")
-        ? last.cwd !== undefined ? inFolder(last.place.slice(7), last.cwd) : undefined
-        : inWorkspace(state.workspaces.get(last.place));
+      : last.place.startsWith("home:")
+        ? undefined
+        : last.place.startsWith("folder:")
+          ? last.cwd !== undefined ? inFolder(last.place.slice(7), last.cwd) : undefined
+          : inWorkspace(state.workspaces.get(last.place));
     if (q) return q;
   }
-  return inWorkspace(recentWorkspaces(state.workspaces.values(), first.node, 1)[0]) ?? { place: homePlace(first.node), machine: first };
+  return inWorkspace(recentWorkspaces(state.workspaces.values(), first.node, 1)[0]) ?? (first.confined ? undefined : { place: homePlace(first.node), machine: first });
 }
 
 /** What New terminal's + says it does: where, on which machine while there are several, and the folder's path under it. */

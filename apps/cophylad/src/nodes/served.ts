@@ -647,19 +647,24 @@ export class NodeServer {
    * is opened and closed for the client the primary names, whose viewer is `link:<client>`.
    * A file read with no terminal is one anywhere on this computer, which, like a folder listed
    * for a picker, needs no terminal here, only a machine that shares more than some folders.
+   * On one that shares some folders alone, the terminals are those started inside them, and
+   * one starts there alone (`confineTerminal`).
    */
   private async serveTerminals(method: (typeof NODE_SERVED_TERMINALS)[number], params: unknown): Promise<unknown> {
     const t = this.deps.terminals?.();
-    const unconfined = this.confined() === undefined;
-    const folders = method === "terminal.folders" && !t && this.deps.folders && unconfined ? this.deps.folders : undefined;
+    const c = this.confined();
     const anywhere = method === "terminal.file" && (params as { terminal?: unknown } | undefined)?.terminal === undefined;
+    // A folder listed for a picker and a file read by its full path reach past any folder shared.
+    if (c && (method === "terminal.folders" || anywhere)) throw new RpcError("denied", "this node shares folders alone: it lists no folder and reads no file by its full path for the primary");
+    const folders = method === "terminal.folders" && !t && this.deps.folders ? this.deps.folders : undefined;
     const own = t?.files ?? this.deps.files;
-    const reader = anywhere && unconfined && own?.readAt ? (path: string, opts: Parameters<SessionFiles["readAt"]>[1]) => own.readAt!(path, opts) : undefined;
-    const refused = folders || reader ? undefined : anywhere && unconfined ? new RpcError("unsupported", "this node reads no files") : terminalsRefused(t, !unconfined);
+    const reader = anywhere && own?.readAt ? (path: string, opts: Parameters<SessionFiles["readAt"]>[1]) => own.readAt!(path, opts) : undefined;
+    const refused = folders || reader ? undefined : anywhere ? new RpcError("unsupported", "this node reads no files") : terminalsRefused(t);
     if (refused) throw refused;
     const parsed = clientRequests[method].params.safeParse(params ?? {});
     if (!parsed.success) throw new RpcError("invalid", `bad params for ${method}`, parsed.error.issues);
-    const p = parsed.data as { terminal?: string; input?: boolean; drive?: { cols: number; rows: number }; end?: boolean; argv?: string[]; path?: string; image?: true; whole?: true; at?: number; stream?: true; files?: true };
+    const p = parsed.data as { terminal?: string; input?: boolean; drive?: { cols: number; rows: number }; end?: boolean; argv?: string[]; cwd?: string; workspace?: string; path?: string; image?: true; whole?: true; at?: number; stream?: true; files?: true };
+    if (c) this.confineTerminal(method, p, t!, c);
     let viewer = "";
     if (method === "terminal.open" || method === "terminal.close") {
       const client = ClientId.safeParse((params as { client?: unknown } | undefined)?.client);
@@ -675,7 +680,7 @@ export class NodeServer {
       async () => {
         switch (method) {
           case "terminal.list":
-            return { terminals: t!.rows.list() };
+            return { terminals: c ? t!.rows.list().filter((row) => c.contains(row.cwd)) : t!.rows.list() };
           case "terminal.spawn":
             return { terminal: await t!.rows.spawn(parsed.data as Parameters<NodeTerminals["rows"]["spawn"]>[0]) };
           case "terminal.open":
@@ -696,6 +701,32 @@ export class NodeServer {
         }
       },
     );
+  }
+
+  /**
+   * On a node that shares some folders alone, the terminals the primary reaches: one started
+   * inside them, which it opens, ends and reads under; and one it starts, in a folder inside or
+   * a workspace inside, never in the home. Refused before the gate asks anyone; a terminal
+   * outside is answered as one not here. Closing a view without ending the program ends nothing.
+   */
+  private confineTerminal(method: (typeof NODE_SERVED_TERMINALS)[number], p: { terminal?: string; end?: boolean; cwd?: string; workspace?: string }, t: NodeTerminals, c: Confinement): void {
+    switch (method) {
+      case "terminal.spawn":
+        if (p.cwd !== undefined) c.require(p.cwd, "that folder");
+        else if (p.workspace !== undefined) c.require(this.deps.local?.workspace(p.workspace)?.path, "that workspace");
+        else throw new RpcError("denied", "this node shares folders alone: a terminal starts in one of them, not in its home folder");
+        return;
+      case "terminal.close":
+      case "terminal.open":
+      case "terminal.file": {
+        if (method === "terminal.close" && p.end !== true) return;
+        const row = t.rows.list().find((r) => r.id === p.terminal);
+        if (!row || !c.contains(row.cwd, true)) throw new RpcError("not_found", `no terminal ${p.terminal}`);
+        return;
+      }
+      default:
+        return;
+    }
   }
 
   /**

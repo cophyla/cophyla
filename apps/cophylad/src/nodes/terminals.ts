@@ -9,8 +9,11 @@
 // nothing until it drained, then a fresh repaint, which the primary asks of the node by opening
 // the terminal for it again. A client that goes takes its views with it (`terminal.drop`), and
 // so does the link: the primary forgets the node's views, the node drops every `link:` viewer.
-// A node that shares some folders alone (confine.ts) sends no terminal up and serves none: a
-// shell reaches past any folder.
+// A node that shares some folders alone (confine.ts) sends up and serves the terminals that
+// started inside them, and starts one for the primary only there: a terminal is judged by the
+// folder it started in, as a session is by its own. A shell reaches past any folder, as an
+// agent session started there does: confinement keeps the primary's requests to the folders,
+// and is not a sandbox. It lists no folder for a picker and reads no file by its full path.
 
 import { RpcError } from "@cophyla/protocol";
 import type { Ask, ClientNotificationParams, ClientParams, ClientResult, FolderPick, TerminalSize } from "@cophyla/protocol";
@@ -188,8 +191,7 @@ export class TerminalViews {
 }
 
 /** Why a node serves the primary none of its terminals, or undefined when it serves them. */
-export function terminalsRefused(n: NodeTerminals | undefined, confined: boolean): RpcError | undefined {
+export function terminalsRefused(n: NodeTerminals | undefined): RpcError | undefined {
   if (!n) return new RpcError("unsupported", "this node runs no terminals");
-  if (confined) return new RpcError("denied", "this node shares folders alone, not its terminals");
   return undefined;
 }

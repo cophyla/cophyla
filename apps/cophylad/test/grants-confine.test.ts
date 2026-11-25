@@ -4,18 +4,20 @@
 // (a spawn in a workspace outside, a workspace put outside, a file read outside or through a
 // junction, the desktop, an editable or a network tool, the node's profiles, a start in a mode
 // looser than asking before each edit, the brain's stop of a session its owner started, a
-// reopen under another profile); its lists, its searches and its samples answer what is
-// inside; what goes up the link is what is inside. A node that answers its own asks answers
-// them alone. The node's own apps see everything.
+// reopen under another profile, a terminal started outside or in the home, or one outside
+// opened, ended or read under); its lists, its searches and its samples answer what is inside;
+// what goes up the link is what is inside. A node that answers its own asks answers them alone.
+// The node's own apps see everything.
 
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { newId } from "@cophyla/protocol";
-import type { Hit, MetricsSample, Session, Workspace } from "@cophyla/protocol";
+import type { Hit, MetricsSample, Session, Terminal, Workspace } from "@cophyla/protocol";
 import { Confinement } from "../src/nodes/confine.ts";
 import { NodeServer } from "../src/nodes/served.ts";
+import type { NodeTerminals } from "../src/nodes/terminals.ts";
 import { silentLogger } from "../src/log.ts";
 import { waitFor } from "./helpers.ts";
 import { client, linked, startPrimary, startSecondary, stopAll } from "./nodes-helpers.ts";
@@ -278,6 +280,68 @@ describe("what a confined node serves", () => {
     const t = tree();
     const { s, localAsk } = server(t, true);
     expect(await refused(s.serve("ask.answer", { id: localAsk.id, option: "a" }, 1))).toMatch(/answers its own asks/);
+  });
+
+  test("its terminals: one started inside is listed, opened, ended and read under; one starts inside alone, never through a junction or in the home", async () => {
+    const t = tree();
+    const wsIn: Workspace = { id: newId("workspace"), node: NODE, path: t.shared, name: "shared", origin: "user", tags: [], lastActivity: 1 };
+    const wsOut: Workspace = { ...wsIn, id: newId("workspace"), path: t.secret, name: "secret" };
+    const workspaces = new Map([wsIn, wsOut].map((w) => [w.id, w]));
+    const term = (id: string, cwd: string): Terminal => ({ id, node: NODE, host: "h", argv0: "bash", cwd, cols: 80, rows: 24, status: "running", windows: 0, startedAt: 1 });
+    // one in a folder inside, one outside, and one whose folder is a junction inside that leads out
+    const rows = [term("in", join(t.shared, "src")), term("out", t.secret), term("through", t.junction)];
+    const ran: string[] = [];
+    const text = (path: string) => ({ path, size: 0, modified: 0, text: "" });
+    const terminals = {
+      rows: { list: () => rows, spawn: async (p: { cwd?: string; workspace?: string }) => (ran.push(`spawn ${p.cwd ?? p.workspace ?? "home"}`), rows[0]!) },
+      streams: {
+        open: async (_viewer: string, id: string) => (ran.push(`open ${id}`), { terminal: rows.find((r) => r.id === id)!, seq: 0, cols: 80, rows: 24, data: "" }),
+        close: async (_viewer: string, id: string, end?: boolean) => void ran.push(`close ${id}${end ? " end" : ""}`),
+        input: () => undefined,
+        resize: () => undefined,
+        dropClient: () => undefined,
+        dropViewers: () => undefined,
+      },
+      files: { readUnder: async (root: string, path: string) => (ran.push(`read ${root} ${path}`), text(path)), readAt: async (path: string) => (ran.push(`readAt ${path}`), text(path)) },
+      folders: async () => (ran.push("folders"), { path: t.shared, folders: [], home: t.root, roots: [] }),
+    } as unknown as NodeTerminals;
+    const confinement = new Confinement([t.shared]);
+    const s = new NodeServer({
+      gate: { run: async (_req: unknown, fn: (ctx: unknown) => unknown) => fn({ audit: {} }) } as never,
+      table: {} as never,
+      principal: { kind: "node", id: "node_p" },
+      sessionKey: "link-1",
+      log: silentLogger,
+      onPending: () => undefined,
+      metricsSubscriber: "link:link-1",
+      confine: () => confinement,
+      local: { session: () => undefined, workspace: (id) => workspaces.get(id), ask: () => undefined },
+      terminals: () => terminals,
+    });
+    let n = 0;
+    const call = (method: string, params: unknown) => s.serve(method, params, ++n);
+    const client = newId("client");
+    expect(((await call("terminal.list", {})) as { terminals: Terminal[] }).terminals.map((x) => x.id)).toEqual(["in"]);
+    expect(await refused(call("terminal.open", { terminal: "in", input: true, client }))).toBe("served");
+    // one outside is as one not here: not opened, ended or read under
+    expect(await refused(call("terminal.open", { terminal: "out", client }))).toBe("no terminal out");
+    expect(await refused(call("terminal.open", { terminal: "through", input: true, client }))).toBe("no terminal through");
+    expect(await refused(call("terminal.close", { terminal: "out", end: true, client }))).toBe("no terminal out");
+    expect(await refused(call("terminal.file", { terminal: "out", path: "keys.txt" }))).toBe("no terminal out");
+    expect(await refused(call("terminal.close", { terminal: "in", end: true, client }))).toBe("served");
+    // a view closed ends nothing, whichever terminal it names
+    expect(await refused(call("terminal.close", { terminal: "out", client }))).toBe("served");
+    expect(await refused(call("terminal.file", { terminal: "in", path: "notes.md" }))).toBe("served");
+    expect(await refused(call("terminal.spawn", { cwd: join(t.shared, "src") }))).toBe("served");
+    expect(await refused(call("terminal.spawn", { workspace: wsIn.id }))).toBe("served");
+    expect(await refused(call("terminal.spawn", { workspace: wsOut.id }))).toMatch(/that workspace is outside the folders/);
+    expect(await refused(call("terminal.spawn", { cwd: t.junction }))).toMatch(/that folder is outside the folders/);
+    expect(await refused(call("terminal.spawn", { cwd: join(t.shared, "..", "secret") }))).toMatch(/outside the folders/);
+    expect(await refused(call("terminal.spawn", { argv: ["bash"] }))).toMatch(/not in its home folder/);
+    // no folder listed for a picker, and no file read by its full path, inside or not
+    expect(await refused(call("terminal.folders", { path: t.shared }))).toMatch(/lists no folder/);
+    expect(await refused(call("terminal.file", { path: join(t.shared, "src", "notes.md") }))).toMatch(/reads no file by its full path/);
+    expect(ran).toEqual(["open in", "close in end", "close out", `read ${join(t.shared, "src")} notes.md`, `spawn ${join(t.shared, "src")}`, `spawn ${wsIn.id}`]);
   });
 });
 

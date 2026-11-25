@@ -2817,7 +2817,7 @@ describe("default view: terminals", () => {
     expect(terminalTabLabel(s, term("t6", 1, { node: OTHER }), false)).toBe("app");
   });
 
-  const machine = (id: string, name: string, extra: { status?: "online" | "offline"; terminals?: boolean } = {}) => ({
+  const machine = (id: string, name: string, extra: { status?: "online" | "offline"; terminals?: boolean; confined?: true } = {}) => ({
     id,
     name,
     role: "secondary" as const,
@@ -2825,7 +2825,7 @@ describe("default view: terminals", () => {
     via: "direct" as const,
     platform: "windows" as const,
     scope: { kind: "machine" as const },
-    capabilities: { brain: false, harnesses: ["claude" as const], voice: { wake: false, stt: false, tts: false }, remote: false, ...(extra.terminals !== undefined ? { terminals: extra.terminals } : {}) },
+    capabilities: { brain: false, harnesses: ["claude" as const], voice: { wake: false, stt: false, tts: false }, remote: false, ...(extra.terminals !== undefined ? { terminals: extra.terminals } : {}), ...(extra.confined ? { confined: true as const } : {}) },
     versions: { platform: "0.3.0", protocol: 1 },
     lastSeen: 1,
   });
@@ -2982,6 +2982,40 @@ describe("default view: terminals", () => {
     // no machine starts terminals: none
     apply(s, { type: "nodes", nodes: [machine(NODE, "desk", { terminals: false })] });
     expect(quickPlace(s, {}, undefined)).toBeUndefined();
+  });
+
+  test("a machine that shares some folders alone offers its workspaces and a path typed, never its home or Other folder…", () => {
+    const CODER = "node_01ARZ3NDEKTSV4RRFFQ69G5FC5";
+    const s = scoped(ready({ node: NODE, scopes: [...CLIENT.scopes, "terminal"] }));
+    apply(s, { type: "nodes", nodes: [machine(NODE, "desk"), machine(CODER, "coder", { terminals: true, confined: true })] });
+    expect(terminalMachines(s)).toEqual([
+      { node: NODE, name: "desk", here: true },
+      { node: CODER, name: "coder", here: false, confined: true },
+    ]);
+    const ws = (id: string, lastActivity: number, path: string, name: string, node = NODE): Workspace => ({ id, node, path, name, origin: "discovered", lastActivity });
+    const list = [ws("ws_app", 3, "C:\\src\\app", "My App"), ws("ws_shared", 5, "D:\\work\\shared", "shared", CODER)];
+    const rows = (filter: string) => placeRows(s, list, filter).map((m) => [m.machine.name, m.places.map((p) => p.name)]);
+    expect(rows("")).toEqual([["desk", ["My App", "Home folder", "Other folder…"]], ["coder", ["shared"]]]);
+    // a path typed is offered there too, for the machine to judge
+    expect(rows("D:\\work\\shared\\sub")).toEqual([["desk", ["Open in", "Other folder…"]], ["coder", ["Open in"]]]);
+    // a filter that leaves none of its workspaces leaves the machine out
+    expect(rows("app")).toEqual([["desk", ["My App", "Other folder…"]]]);
+    // + never starts in its home: where the last started there gives way, a workspace there does not
+    expect(quickPlace(s, {}, { place: homePlace(CODER) })).toMatchObject({ place: homePlace(NODE) });
+    apply(s, { type: "workspace.state", params: list[1]! });
+    expect(quickPlace(s, {}, { place: "ws_shared" })).toMatchObject({ place: "ws_shared", machine: { node: CODER } });
+    // an app on it relayed to the desk: the desk asks it, so it is confined there too
+    const relayed = scoped(ready({ node: CODER, scopes: [...CLIENT.scopes, "terminal"] }));
+    apply(relayed, { type: "nodes", nodes: [machine(NODE, "desk", { terminals: false }), machine(CODER, "coder", { terminals: true, confined: true })] });
+    expect(terminalMachines(relayed)).toEqual([{ node: CODER, name: "coder", here: true, confined: true }]);
+    expect(quickPlace(relayed, {}, undefined)).toBeUndefined();
+    // its own app, talking to it, sees all of it: the node the view talks to is never confined to it
+    const own = scoped(ready({ node: CODER, scopes: [...CLIENT.scopes, "terminal"] }));
+    own.node = CODER;
+    apply(own, { type: "nodes", nodes: [machine(NODE, "desk"), machine(CODER, "coder", { terminals: true, confined: true })] });
+    expect(terminalMachines(own)).toEqual([{ node: CODER, name: "coder", here: true }]);
+    expect(placeRows(own, [], "")[0]?.places.map((p) => p.name)).toEqual(["Home folder", "Other folder…"]);
+    expect(quickPlace(own, {}, undefined)).toMatchObject({ place: homePlace(CODER) });
   });
 
   test("the place New terminal last started in comes back from the device as it was kept, and nothing else does", () => {

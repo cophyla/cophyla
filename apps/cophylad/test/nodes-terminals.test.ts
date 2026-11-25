@@ -4,9 +4,10 @@
 // and its keys reach the secondary's host; a shell starts on the node named, or where the
 // workspace is, in a folder the picker listed there; a client that goes takes its views with
 // it; a terminal of a node that left is exited for every client. A node that shares some
-// folders alone sends no terminal up and serves none. A file anywhere on the secondary is read by
-// its full path, with no terminal, and a folder there listed with its files; by none that shares
-// some folders alone.
+// folders alone says so, sends up and serves the terminals started inside them, and starts one
+// for the primary there alone: in a folder or a workspace inside, never its home or a folder
+// outside. A file anywhere on the secondary is read by its full path, with no terminal, and a
+// folder there listed with its files; by none that shares some folders alone.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -17,7 +18,7 @@ import { silentLogger } from "../src/log.ts";
 import { Tether } from "../src/sessions/tether/index.ts";
 import { FakeTether } from "./fakes/tether.ts";
 import type { FakeSession } from "./fakes/tether.ts";
-import { isMethod, sleep, tempHome, TestClient, waitFor } from "./helpers.ts";
+import { isMethod, removeHome, sleep, tempHome, TestClient, waitFor } from "./helpers.ts";
 import { client, linked, startPrimary, startSecondary, stopAll } from "./nodes-helpers.ts";
 import type { Primary, Started } from "./nodes-helpers.ts";
 
@@ -171,17 +172,26 @@ describe("terminals across nodes", () => {
 
 describe("a node that shares some folders alone", () => {
   let scratch: string;
+  let outside: string;
   let fakeS: FakeTether;
   let primary: Primary;
   let secondary: Started;
   let c: TestClient;
   let ts: FakeSession;
+  let away: FakeSession;
+
+  type Row = { id: string; capabilities: { terminals?: boolean; confined?: true } };
+  const row = async () => (await c.request<{ nodes: Row[] }>("node.list")).nodes.find((n) => n.id === secondary.identity.id);
 
   beforeAll(async () => {
     scratch = tempHome();
+    outside = tempHome();
+    mkdirSync(join(scratch, "proj"), { recursive: true });
     fakeS = await new FakeTether(join(scratch, "tether-s")).start();
     fakeS.prefix = "s";
-    ts = fakeS.add({ argv: ["bash"], cwd: scratch });
+    ts = fakeS.add({ argv: ["bash"], cwd: join(scratch, "proj") });
+    ts.setScreen(["$ "]);
+    away = fakeS.add({ argv: ["bash"], cwd: outside });
     primary = await startPrimary({ toml: TETHER });
     secondary = await startSecondary(primary, { toml: TETHER, gateRules: NODE_RULES, paths: [scratch], daemon: { tether: tetherFor(fakeS, join(scratch, "s")) } });
     await linked(secondary);
@@ -192,19 +202,53 @@ describe("a node that shares some folders alone", () => {
     c?.close();
     await stopAll(secondary, primary?.d);
     await fakeS?.stop();
+    if (outside) removeHome(outside);
   });
 
-  test("sends no terminal up, says it starts none, and serves none", async () => {
-    const { terminals } = await c.request<{ terminals: Terminal[] }>("terminal.list");
-    expect(terminals.map((t) => t.id)).not.toContain(ts.id);
-    const nodes = await c.request<{ nodes: { id: string; capabilities: { terminals?: boolean } }[] }>("node.list");
-    await waitFor(async () => (await c.request<{ nodes: { id: string; capabilities: { terminals?: boolean } }[] }>("node.list")).nodes.find((n) => n.id === secondary.identity.id)?.capabilities.terminals === false || undefined);
-    expect(nodes.nodes.some((n) => n.id === secondary.identity.id)).toBe(true);
-    const spawn = await c.call("terminal.spawn", { node: secondary.identity.id, cwd: scratch });
-    expect("error" in spawn && spawn.error.data?.code).toBe("denied");
+  test("says it starts terminals and shares some folders alone, and sends up the terminals started inside them alone", async () => {
+    await waitFor(async () => (await row())?.capabilities.terminals === true || undefined);
+    expect((await row())?.capabilities.confined).toBe(true);
+    const listed = async () => (await c.request<{ terminals: Terminal[] }>("terminal.list")).terminals.map((t) => t.id);
+    await waitFor(async () => (await listed()).includes(ts.id) || undefined);
+    expect(await listed()).not.toContain(away.id);
+    // as they start: one outside stays the node's own, one inside goes up
+    const later = fakeS.add({ argv: ["zsh"], cwd: outside });
+    const also = fakeS.add({ argv: ["fish"], cwd: scratch });
+    await c.next(isMethod("terminal.state", (p) => (p as Terminal).id === also.id));
+    await sleep(200);
+    expect(c.notifications.some((n) => n.method === "terminal.state" && [later.id, away.id].includes((n.params as Terminal).id))).toBe(false);
+    expect(await listed()).not.toContain(later.id);
+  });
+
+  test("a client of the primary opens one started inside, types into it and closes it", async () => {
+    const r = await c.request<{ terminal: Terminal; data: string }>("terminal.open", { terminal: ts.id, input: true });
+    expect(r.terminal.node).toBe(secondary.identity.id);
+    expect(r.data).toContain("$ ");
+    c.signal("terminal.input", { terminal: ts.id, data: "ls\r" });
+    await waitFor(() => ts.typed.includes("write:ls\r"));
+    await c.request("terminal.close", { terminal: ts.id });
+  });
+
+  test("a shell starts in a folder or a workspace inside, never in its home or a folder outside", async () => {
+    const inFolder = await c.request<{ terminal: Terminal }>("terminal.spawn", { node: secondary.identity.id, cwd: join(scratch, "proj") });
+    expect(inFolder.terminal).toMatchObject({ node: secondary.identity.id, cwd: join(scratch, "proj") });
+    // the folder shared is the node's workspace: a shell starts there with no node named
+    const shared = await waitFor(async () => (await c.request<{ workspaces: { id: string; node: string; path: string }[] }>("workspace.list")).workspaces.find((w) => w.node === secondary.identity.id && w.path === scratch));
+    const inWs = await c.request<{ terminal: Terminal }>("terminal.spawn", { workspace: shared!.id });
+    expect(inWs.terminal).toMatchObject({ node: secondary.identity.id, cwd: scratch });
+    const spawns = () => fakeS.requests.filter((q) => q.op === "spawn").length;
+    const before = spawns();
+    const home = await c.call("terminal.spawn", { node: secondary.identity.id });
+    expect("error" in home && home.error.data?.code).toBe("denied");
+    expect("error" in home && home.error.message).toMatch(/not in its home folder/);
+    const out = await c.call("terminal.spawn", { node: secondary.identity.id, cwd: outside });
+    expect("error" in out && out.error.data?.code).toBe("denied");
+    const up = await c.call("terminal.spawn", { node: secondary.identity.id, cwd: join(scratch, "..") });
+    expect("error" in up && up.error.data?.code).toBe("denied");
+    expect(spawns()).toBe(before);
+    // no picker lists a folder there, inside or not
     const pick = await c.call("terminal.folders", { node: secondary.identity.id, path: scratch });
     expect("error" in pick && pick.error.data?.code).toBe("denied");
-    expect(fakeS.requests.some((q) => q.op === "spawn")).toBe(false);
   });
 
   test("reads no file by its full path, not even one in the folders it shares, and lists no folder's files", async () => {

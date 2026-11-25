@@ -499,7 +499,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
   /** Files between this user and other people, kept by the primary. */
   let peerFilesLive: PeerFiles | undefined;
   // a hands node sends and receives no files
-  const node = () => selfNode(identity, config, PLATFORM_VERSION, Date.now(), profiles.harnessesOk(), voice?.capabilities(), nodes?.roleOf() ?? config.node.role, brain?.brainVersion, remote?.capable() ?? false, nodes?.via() ?? "direct", servesTerminals(), config.agent_messages.enabled ? { acceptInBypass: acceptInBypass() } : undefined, true);
+  const node = () => selfNode(identity, config, PLATFORM_VERSION, Date.now(), profiles.harnessesOk(), voice?.capabilities(), nodes?.roleOf() ?? config.node.role, brain?.brainVersion, remote?.capable() ?? false, nodes?.via() ?? "direct", servesTerminals(), config.agent_messages.enabled ? { acceptInBypass: acceptInBypass() } : undefined, true, nodes?.confinement()?.active ?? false);
   // The agents' MCP shim every session runs, from a copy in a folder that never moves, found
   // once; a test run gives the profiles none, unless it names one.
   let agentShim: string | null | undefined = opts.agentShim;
@@ -1937,7 +1937,8 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
   const folderDeps = systemFolderDeps(sessionsLog.child("terminals"));
   const folders = (path: string | undefined, opts?: { files?: boolean }) => listFolders(path, folderDeps, opts);
   nodeTerminals = terminalRows && terminalStreams ? { rows: terminalRows, streams: terminalStreams, files, folders } : undefined;
-  servesTerminals = () => tether?.available === true && !(nodes?.confinement()?.active ?? false);
+  // A node that shares some folders alone serves the terminals started inside them (nodes/served.ts).
+  servesTerminals = () => tether?.available === true;
 
   // Where the user is and where replies are read out. The window in front is the system's to
   // say on Windows; a test says nothing of it unless it brings its own.
