@@ -19,6 +19,9 @@
 // With [sessions].type_into_busy, a busy session is typed into with no prompt on screen or
 // with only the message typed last in it, a terminal that shows no prompt is typed into after a
 // while, and so is a held prompt with no ask open, never while one is.
+// A start of the primary's on a node that trusted it has the folder trust dialog answered by
+// moving onto the row that trusts and pressing Enter; any other start presses nothing and fails
+// saying it waits on the dialog.
 // With [sessions].resume_takes_terminal, a Claude CLI that resumes another thread in its
 // terminal takes the terminal to that thread, and the record of the id it left is ended when
 // it has no transcript, its process untouched.
@@ -47,6 +50,11 @@ import type { Mini } from "./helpers.ts";
 
 const RULE = "─".repeat(40);
 const EMPTY: (string | [string, "dim"])[] = ["", RULE, ['❯ Try "fix the flaky test"', "dim"], RULE, "  ⏵⏵ accept edits on"];
+/** The folder trust dialog as 2.1.289 draws it, and after the pointer was moved down a row. */
+const TRUST = [" Accessing workspace:", " ❯ No, exit", "   Yes, I trust this folder", " Enter to confirm · Esc to cancel"];
+const TRUSTING = [" Accessing workspace:", "   No, exit", " ❯ Yes, I trust this folder", " Enter to confirm · Esc to cancel"];
+/** The next Claude CLI started shows the folder trust dialog before it registers. */
+let trustFirst = false;
 
 let fake: FakeTether;
 let tether: Tether;
@@ -134,12 +142,26 @@ beforeAll(async () => {
   mkdirSync(cwd, { recursive: true });
   mkdirSync(ownDir, { recursive: true });
   fake = await new FakeTether(join(scratch, "tether")).start();
-  // The harness registers once it runs, as Claude writes its registry entry.
+  // The harness registers once it runs, as Claude writes its registry entry; with `trustFirst`,
+  // once its folder trust dialog is answered: Enter on the row that trusts.
   fake.onSpawn = (s) => {
     s.setScreen(EMPTY);
     if (!s.spawn.argv.includes("--session-id")) return;
-    alive.add(s.pid);
-    writeRegistry(registry, { pid: s.pid, sessionId: sessionIdOf(s), cwd, status: "idle" });
+    const register = () => {
+      s.setScreen(EMPTY);
+      alive.add(s.pid);
+      writeRegistry(registry, { pid: s.pid, sessionId: sessionIdOf(s), cwd, status: "idle" });
+    };
+    if (!trustFirst) return register();
+    s.setScreen(TRUST);
+    s.onKeys = (keys) => {
+      for (const key of keys) {
+        const on = s.lines()[2]!.includes("❯");
+        if (key === "Down") s.setScreen(TRUSTING);
+        else if (key === "Up") s.setScreen(TRUST);
+        else if (key === "Enter" && on) register();
+      }
+    };
   };
   tetherConfig = { idle_exit_s: 600, window: "auto", window_on_start: false, profiles: false, on_path: false, dir: fake.dir };
   tether = new Tether({
@@ -1007,6 +1029,41 @@ describe("how a session cophylad starts is launched", () => {
       tetherConfig.window_on_start = false;
     }
   });
+});
+
+describe("a start that meets the folder trust dialog", () => {
+  const terminalOf = (native: string) => [...fake.sessions.values()].find((x) => x.spawn.labels["cophylad.session"] === native)!;
+
+  test("a start of the primary's, on a node whose owner let it work there unasked, has the dialog answered: the pointer moved onto the row that trusts, then Enter", async () => {
+    trustFirst = true;
+    try {
+      const s = await mini.sessions.spawn({ harness: "claude", workspace, prompt: "In the folder lent" }, { profiles: mini.profiles, trustFolder: true });
+      expect(s.origin).toBe("orchestrator");
+      const fs = terminalOf(s.native.id);
+      expect(fs.typed.slice(0, 2)).toEqual(["keys:Down", "keys:Enter"]);
+      // its first prompt is typed once it has started, as any start's
+      await waitFor(() => fs.typed.includes("paste:In the folder lent"), 5000);
+    } finally {
+      trustFirst = false;
+    }
+  }, 15_000);
+
+  test("any other start leaves the dialog to whoever is at the machine, presses nothing, and says what it waits on", async () => {
+    trustFirst = true;
+    const before = new Set(fake.sessions.keys());
+    try {
+      const r = await mini.sessions.spawn({ harness: "claude", workspace, prompt: "Nobody trusts this" }, { profiles: mini.profiles }).then(
+        () => "started",
+        (e: unknown) => (e instanceof Error ? e.message : String(e)),
+      );
+      expect(r).toMatch(/waiting on the folder trust dialog/);
+      const fs = [...fake.sessions.values()].find((x) => !before.has(x.id))!;
+      expect(fs.typed).toEqual([]);
+      fs.exit(0);
+    } finally {
+      trustFirst = false;
+    }
+  }, 15_000);
 });
 
 describe("[sessions].resume_takes_terminal", () => {

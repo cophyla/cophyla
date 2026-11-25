@@ -24,8 +24,10 @@ never the command line, so it stays out of the process list and the shell's hist
 keeps the asks raised here to this machine's own clients. At a terminal `join` asks whether the
 primary may start sessions and terminals, run commands and edit files here without asking each
 time, yes unless answered no; `--trust` and `--ask` answer it beforehand, and with no terminal
-the answer is yes. A no is kept in `data/link.json`, and then `[gate.policy.node]` decides for
-the primary's requests as for any other node's. On Windows, joining the whole machine (no
+the answer is yes. A yes also answers the folder trust dialog of each Claude session the
+primary starts here in a tether terminal, so no one need be at this machine. A no is kept in
+`data/link.json`, and then `[gate.policy.node]` decides for the primary's requests as for any
+other node's, and the dialog waits for whoever is here. On Windows, joining the whole machine (no
 `--workspace`), it asks too whether the machine's sign-in door comes on (Remote desktop,
 below), no unless answered yes, which `--door` and `--no-door` answer beforehand; with no
 terminal the answer is no. `node.join {door}` then shares the desktop if it is not shared, waits

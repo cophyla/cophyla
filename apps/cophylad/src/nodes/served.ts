@@ -31,10 +31,10 @@
 // `[gate.policy.node]` would ask is allowed; a workspace node never lets its primary in so.
 
 import { capabilityRequests, ClientId, clientRequests, RpcError } from "@cophyla/protocol";
-import type { Ask, CapabilityRequestName, CapabilityResult, FileText, FolderPick, Hit, LaunchMode, ListeningPort, MetricsSample, Principal, RiskClass, RpcId, Session, SessionScope, ToolDefinition, ToolSource, Workspace } from "@cophyla/protocol";
+import type { Ask, CapabilityParams, CapabilityRequestName, CapabilityResult, FileText, FolderPick, Hit, LaunchMode, ListeningPort, MetricsSample, Principal, RiskClass, RpcId, Session, SessionScope, ToolDefinition, ToolSource, Workspace } from "@cophyla/protocol";
 import type { Confinement } from "./confine.ts";
 import type { ToolConfinement } from "../tools/index.ts";
-import { brainMethods, sendOptions, spawnLoosens } from "../brain-link/methods.ts";
+import { brainMethods, sendOptions, spawnLoosens, spawnRequest } from "../brain-link/methods.ts";
 import type { BrainMethodContext, BrainMethodDeps, BrainMethodTable } from "../brain-link/methods.ts";
 import type { Gate, GateContext, GateRequest, RunOptions } from "../gate/index.ts";
 import type { Logger } from "../log.ts";
@@ -123,12 +123,24 @@ export const NODE_SERVED_PORTS = ["ports.list"] as const;
 /**
  * The served table: `brainMethods` narrowed to the allowlist, with `ui.say` and its kin never
  * reachable. `ask.answer` answers as the primary node, not as the brain: the primary already
- * checked who may answer, and the answer is recorded as coming through it.
+ * checked who may answer, and the answer is recorded as coming through it. A session started
+ * for a primary this node's owner let work here unasked (`trusted`) has its folder trust
+ * dialog answered here, so nothing waits on someone at this machine.
  */
-export function nodeServedTable(deps: BrainMethodDeps, primaryId: string, opts: { confine?: () => ToolConfinement | undefined; agents?: () => Pick<AgentMessages, "deliverHere"> | undefined } = {}): BrainMethodTable {
+export function nodeServedTable(deps: BrainMethodDeps, primaryId: string, opts: { confine?: () => ToolConfinement | undefined; agents?: () => Pick<AgentMessages, "deliverHere"> | undefined; trusted?: () => boolean } = {}): BrainMethodTable {
   const all = brainMethods(deps) as Record<string, unknown>;
   const out: Record<string, unknown> = {};
   for (const name of NODE_SERVED) if (all[name]) out[name] = all[name];
+  if (out["session.spawn"]) {
+    const spawn = out["session.spawn"] as BrainMethodTable["session.spawn"];
+    out["session.spawn"] = {
+      ...spawn,
+      handler: async (p: CapabilityParams<"session.spawn">) => {
+        const session = await deps.sessions.spawn(spawnRequest(p), { profiles: deps.profiles, ...(opts.trusted?.() ? { trustFolder: true } : {}) });
+        return { id: session.id };
+      },
+    } satisfies BrainMethodTable["session.spawn"];
+  }
   // A tool run for the primary on a confined node reaches its folders alone.
   const run: BrainMethodTable["tool.run"] = {
     target: (p) => p.name,

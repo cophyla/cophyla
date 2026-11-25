@@ -453,8 +453,7 @@ export class Nodes {
       onMove: (invite) => this.onMove(invite),
       confine: () => this.confinement(),
       answerHere: () => this.membership?.answerHere === true,
-      // a membership from before the question was asked trusts its primary, as the default answer does
-      trusted: () => this.membership !== undefined && this.membership.askPrimary !== true,
+      trusted: () => this.trustsPrimary(),
       local: {
         session: (id) => deps.sessions.get(id),
         workspace: (id) => deps.workspaces.get(id),
@@ -1706,6 +1705,16 @@ export class Nodes {
     const key = JSON.stringify(paths);
     if (this.confined?.key !== key) this.confined = { key, value: new Confinement(paths) };
     return this.confined.value;
+  }
+
+  /**
+   * Whether the owner let this node's primary work here without asking, at the join: what the
+   * class default would ask of it is allowed, and the folder trust dialog of a session it starts
+   * is answered here. A membership from before the question was asked trusts its primary, as
+   * the default answer does; a node with no membership, or the primary itself, trusts none.
+   */
+  trustsPrimary(): boolean {
+    return this.membership !== undefined && this.membership.askPrimary !== true;
   }
 
   /** This node's membership as the status line and the tests read it: no key. */

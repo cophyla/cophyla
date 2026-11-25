@@ -1275,6 +1275,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
       nodeServedTable({ ...capDeps, quotes: { entry: () => undefined }, stream: { take: () => undefined, push: () => undefined, reset: () => undefined } as never }, primaryId, {
         confine: () => (nodes?.confinement()?.active ? nodes.confinement() : undefined),
         agents: () => (config.agent_messages.enabled ? agentMessages : undefined),
+        trusted: () => nodes?.trustsPrimary() ?? false,
       }),
     startBrain,
     stopBrain,

@@ -239,9 +239,15 @@ export interface SendOptions {
   mode?: WorkMode;
 }
 
-/** Where a spawn finds its profile. */
+/** Where a spawn finds its profile, and whether the folder's trust dialog is answered here. */
 export interface SpawnOptions {
   profiles: { get(id: string): HarnessProfile | undefined; defaultFor(h: SpawnParams["harness"]): HarnessProfile | undefined; launch?(id: string): Launch | undefined };
+  /**
+   * The start is this node's primary's, whose owner let it work here without asking at the
+   * join: a Claude session's folder trust dialog is answered here, as no one need be at this
+   * machine to answer it. Only in a tether terminal, whose screen is read and keys pressed.
+   */
+  trustFolder?: boolean;
 }
 
 /** Where a reopen finds its profile, the one it goes on under when not its own, and the mode it goes on in when not the one it was last in. */
@@ -2535,7 +2541,7 @@ export class Sessions implements SessionHost {
     const timeoutMs = p.timeoutMs ?? this.deps.acp?.config.spawn_timeout_ms ?? 60000;
     const deadline = this.now() + timeoutMs;
     let met = false;
-    const trusting = this.trustOwnFolder(term, () => met || this.now() >= deadline || tether.get(term)?.info.status === "exited");
+    const trusting = this.answerTrustDialog(term, () => met || this.now() >= deadline || tether.get(term)?.info.status === "exited", "the chat's own folder was trusted for its session");
     const rec = await this.awaitTerminalSession("claude", () => {
       const found = this.find("claude", sessionId);
       return found && found.session.status !== "ended" ? found : undefined;
@@ -2562,13 +2568,14 @@ export class Sessions implements SessionHost {
   }
 
   /**
-   * Answers the folder trust dialog of the chat's own session while it starts. The folder is
-   * cophylad's own, made by it and holding nothing it did not write, and the terminal has no
-   * window for the user to answer in, so an account that meets the folder for the first time
-   * is answered here. Only that row is ever pressed: any other question is left as it is, and
+   * Answers a Claude session's folder trust dialog while it starts, until `done`: the chat's
+   * own session, whose folder is cophylad's own, made by it and holding nothing it did not
+   * write, in a terminal with no window for the user to answer in; and a session this node's
+   * primary started, whose owner let it work here without asking at the join, when no one need
+   * be at this machine. Only that row is ever pressed: any other question is left as it is, and
    * the start fails saying what it waits on.
    */
-  private async trustOwnFolder(term: TerminalRef, done: () => boolean): Promise<void> {
+  private async answerTrustDialog(term: TerminalRef, done: () => boolean, said: string, fields: Record<string, unknown> = {}): Promise<void> {
     const tether = this.deps.tether!;
     // The pointer is moved a row at a time and read again; Enter is pressed only once it is seen on the row that trusts.
     let moves = 0;
@@ -2582,7 +2589,7 @@ export class Sessions implements SessionHost {
       try {
         if (dialog.selected) {
           await tether.keys(term, ["Enter"]);
-          this.log.info("the chat's own folder was trusted for its session", { terminal: term.id });
+          this.log.info(said, { terminal: term.id, ...fields });
           // Read afresh before anything more is pressed: a dialog that has gone was answered.
           await sleep(600);
         } else {
@@ -2647,7 +2654,7 @@ export class Sessions implements SessionHost {
     // The mode asked for replaces the launch's own; the launch's other flags stay.
     const launch = params.mode !== undefined ? { ...(profileLaunch ?? { args: [] }), mode: params.mode } : profileLaunch;
     if (params.harness === "claude" && this.config.launch === "terminal" && !headless) {
-      const started = await this.spawnInTerminal(params, workspace, profile, launch, model);
+      const started = await this.spawnInTerminal(params, workspace, profile, launch, model, opts.trustFolder === true);
       if (started) return started;
     }
     const rec = await this.acp.spawn({
@@ -2876,9 +2883,9 @@ export class Sessions implements SessionHost {
    * a question itself. The expectation outlives the wait by a long way, so a session unblocked
    * minutes later still arrives knowing what it was started for.
    */
-  private async spawnInTerminal(params: SpawnParams, workspace: { id: string; path: string }, profile: HarnessProfile, launch: Launch | undefined, model: string | undefined): Promise<Session | undefined> {
+  private async spawnInTerminal(params: SpawnParams, workspace: { id: string; path: string }, profile: HarnessProfile, launch: Launch | undefined, model: string | undefined, trustFolder = false): Promise<Session | undefined> {
     if (this.deps.tether?.available) {
-      const started = await this.spawnInTether(params, workspace, profile, launch, model);
+      const started = await this.spawnInTether(params, workspace, profile, launch, model, trustFolder);
       if (started) return started;
     }
     const opener = await pickOpener(this.deps.terminals ?? []);
@@ -2970,11 +2977,12 @@ export class Sessions implements SessionHost {
    * Starts a Claude session in a tether terminal. It shows in the apps, as a terminal the
    * user opens there does; a window opens on it only when `[tether].window_on_start` says so,
    * or when the user raises it (`focus`). The session runs with cophylad's own settings file,
-   * which turns on the plan dialog's clear-context row. Once it registers, the first prompt is
-   * typed, as the user would type it. `undefined` when tether cannot start it, and the caller
-   * tries a terminal of its own.
+   * which turns on the plan dialog's clear-context row. With `trustFolder` (a start of this
+   * node's primary's, let work here unasked) the folder trust dialog is answered while it
+   * starts. Once it registers, the first prompt is typed, as the user would type it.
+   * `undefined` when tether cannot start it, and the caller tries a terminal of its own.
    */
-  private async spawnInTether(params: SpawnParams, workspace: { id: string; path: string }, profile: HarnessProfile, launch: Launch | undefined, model: string | undefined): Promise<Session | undefined> {
+  private async spawnInTether(params: SpawnParams, workspace: { id: string; path: string }, profile: HarnessProfile, launch: Launch | undefined, model: string | undefined, trustFolder = false): Promise<Session | undefined> {
     const tether = this.deps.tether!;
     const adapter = this.adapters.get("claude");
     const sessionId = newSessionId();
@@ -3004,7 +3012,13 @@ export class Sessions implements SessionHost {
           return undefined;
         })
       : undefined;
+    // A start this node's primary asked for, which its owner let work here unasked: the folder's trust dialog is answered here.
+    const deadline = this.now() + timeoutMs;
+    let met = false;
+    const trusting = trustFolder ? this.answerTrustDialog(term, () => met || this.now() >= deadline || tether.get(term)?.info.status === "exited", "the folder was trusted for a session the primary started", { workspace: workspace.id }) : undefined;
     const rec = await this.awaitTerminalSession("claude", () => this.find("claude", sessionId), timeoutMs, term);
+    met = true;
+    await trusting;
     if (!rec) {
       const screen = await tether.screen(term, "text").catch(() => undefined);
       const on = screen ? waitingOn(screen) : undefined;

@@ -128,6 +128,12 @@ export function spawnLoosens<T extends { mode?: LaunchMode }>(p: T): p is T & { 
   return p.mode !== undefined && sessionModeRisk(p.mode) === "exec";
 }
 
+/** What the sessions module is asked to start for a `session.spawn`; a generic ACP agent is refused. */
+export function spawnRequest(p: CapabilityParams<"session.spawn">): Parameters<Sessions["spawn"]>[0] {
+  if (p.harness === "acp") throw new RpcError("unsupported", "a generic ACP agent arrives in a later milestone");
+  return { harness: p.harness, workspace: p.workspace, prompt: p.prompt, ...(p.model ? { model: p.model } : {}), ...(p.task !== undefined ? { task: p.task } : {}), ...(p.profile !== undefined ? { profile: p.profile } : {}), ...(p.mode !== undefined ? { mode: p.mode } : {}) };
+}
+
 /** What a session does in each mode, for the ask before the brain puts it there. */
 const IN_MODE: Record<LaunchMode, string> = {
   default: "It will ask before each edit and command.",
@@ -237,11 +243,7 @@ export function brainMethods(deps: BrainMethodDeps): BrainMethodTable {
       loosens: spawnLoosens,
       ask: (p) => spawnAsk(p, deps.workspaces.get(p.workspace)?.name),
       handler: async (p) => {
-        if (p.harness === "acp") throw new RpcError("unsupported", "a generic ACP agent arrives in a later milestone");
-        const session = await deps.sessions.spawn(
-          { harness: p.harness, workspace: p.workspace, prompt: p.prompt, ...(p.model ? { model: p.model } : {}), ...(p.task !== undefined ? { task: p.task } : {}), ...(p.profile !== undefined ? { profile: p.profile } : {}), ...(p.mode !== undefined ? { mode: p.mode } : {}) },
-          { profiles: deps.profiles },
-        );
+        const session = await deps.sessions.spawn(spawnRequest(p), { profiles: deps.profiles });
         const thread = deps.chat.peek();
         if (thread) deps.chat.touchSession(thread.id, session.id);
         return { id: session.id };

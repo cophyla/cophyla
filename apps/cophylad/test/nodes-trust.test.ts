@@ -2,8 +2,10 @@
 // default it does: what `[gate.policy.node]` would ask of the primary is allowed, while a
 // rule's deny still holds and the audit row is there as before. A join that answered no
 // (`askPrimary`, `cophylad join --ask`) keeps it in link.json, and the primary's writes are
-// asked there again. A folder the machine lends to another person's cluster never lets that
-// primary in so, whatever the machine answered for its own.
+// asked there again. A session the primary starts on a machine that trusted it has its folder
+// trust dialog answered there; on one that answered no, it is left to whoever is at the
+// machine. A folder the machine lends to another person's cluster never lets that primary in
+// so, whatever the machine answered for its own.
 
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
@@ -77,6 +79,28 @@ describe("the primary working on a machine unasked", () => {
     await c.request("ask.answer", { id: asked.id, option: "allow" });
     await updating;
     expect(rows(secondary, "profile.update")[0]).toMatchObject({ decision: "ask", outcome: "ok" });
+  }, 30_000);
+
+  test("a session the primary starts has its folder trust dialog answered on a machine that trusted it, and on no other", async () => {
+    const primary = await up();
+    const trusting = await joined(primary);
+    const asking = await joined(primary, { askPrimary: true, gateRules: { "node:session.spawn": "allow" } });
+    const told = new Map<string, boolean | undefined>();
+    const inbound = (primary.d.nodes as unknown as { inbound: { forward(node: string, method: string, params: unknown): Promise<unknown> } }).inbound;
+    for (const d of [trusting, asking]) {
+      // what the machine's sessions module is asked, without starting anything
+      (d.sessions as unknown as { spawn: (p: unknown, o: { trustFolder?: boolean }) => Promise<unknown> }).spawn = async (_p, o) => {
+        told.set(d.identity.id, o.trustFolder);
+        throw new Error("not started in this test");
+      };
+      const root = mkdtempSync(join(tmpdir(), "cophyla-trust-"));
+      dirs.push(root);
+      const ws = d.workspaces.fromSession(root);
+      await inbound.forward(d.identity.id, "session.spawn", { harness: "claude", workspace: ws.id, prompt: "start here" }).catch(() => undefined);
+    }
+    expect(told.get(trusting.identity.id)).toBe(true);
+    expect(told.has(asking.identity.id)).toBe(true);
+    expect(told.get(asking.identity.id)).toBeUndefined();
   }, 30_000);
 
   test("a folder the machine lends to another cluster still asks that cluster's primary", async () => {
