@@ -343,9 +343,12 @@ user's own latest session of that harness, else the discovered one. A Claude pro
 launch is what the app set (kv `profiles.launch`), else `[[profiles]].args` — applied to
 Claude launches now, with or without `command` — else the allow-listed flags of the user's
 own last session under it, read once off its command line when it registers (kv
-`profiles.mirror`). So a second account needs `config_dir` and, if it wants them, `args`;
-a wrapper script that sets the directory and adds flags hides the account from cophylad and is
-not needed. `profile.update` sets both from the app; `profile.limits` reads the plan limits
+`profiles.mirror`). So a second account needs `config_dir` and, if it wants them, `args`.
+A `claude-<name>` wrapper script (`.cmd`, `.bat`, `.ps1`, `.sh` or none) in a folder on PATH,
+WinGet's Links folder or `~/.local/bin` that sets `CLAUDE_CONFIG_DIR` is found by discovery,
+and its directory is a profile named after it while the directory is there
+(`sessions/claude/wrappers.ts`: a folder is read again only when its time moves, a script only
+when its own does); one declared on the same directory wins. `profile.update` sets both from the app; `profile.limits` reads the plan limits
 now (`metrics/limits.ts`, `fresh`). A profile whose Claude global config never went through
 the first run (`~/.claude.json`, or `<dir>/.claude.json`) is `unauthenticated`, since Claude
 will ask to log in. These kv namespaces are the node's own and never replicated.

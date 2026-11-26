@@ -1,6 +1,6 @@
 // Profile discovery: the harness's own directory is always a profile, the directory the
-// daemon's environment names is a second one when it is another, and a declared profile on a
-// discovered directory wins. A login file that changes rebuilds them, and nothing else does.
+// daemon's environment names is a second one when it is another, so is each account a
+// claude-<name> wrapper sets, and a declared profile on a discovered directory wins. A login file that changes rebuilds them, and nothing else does.
 
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
@@ -10,6 +10,7 @@ import { parseConfig } from "../src/config/load.ts";
 import { silentLogger } from "../src/log.ts";
 import { CLAUDE_KEYCHAIN_SERVICE, claudeKeychainServices, Profiles, profileKey } from "../src/sessions/profiles.ts";
 import type { ProfileChange } from "../src/sessions/profiles.ts";
+import { claudeEnv } from "../src/sessions/claude/start.ts";
 import { Store } from "../src/store/index.ts";
 import { tempHome, tomlString } from "./helpers.ts";
 
@@ -42,6 +43,37 @@ describe("profiles", () => {
     // The same directory under another spelling is one profile, not two.
     const same = profiles("", { CLAUDE_CONFIG_DIR: join(home, ".", ".claude") }, home).byHarness("claude");
     expect(same).toHaveLength(1);
+  });
+
+  test("discovery: each account a claude-<name> wrapper on PATH sets is a profile named after it; a declared one on its directory wins; none with discovery off", () => {
+    const home = tempHome();
+    mkdirSync(join(home, ".claude"), { recursive: true });
+    const bin = join(home, "bin");
+    const ferit = join(home, ".claude-ferit");
+    mkdirSync(bin, { recursive: true });
+    mkdirSync(ferit, { recursive: true });
+    writeFileSync(join(bin, "claude-ferit.cmd"), '@echo off\r\nset "CLAUDE_CONFIG_DIR=%USERPROFILE%\\.claude-ferit"\r\nclaude.exe %*\r\n');
+    const env = { PATH: bin, USERPROFILE: home, HOME: home };
+    if (process.platform === "win32") {
+      const found = profiles("", env, home).byHarness("claude");
+      expect(found.map((p) => [p.name, p.configDir.toLowerCase(), p.origin])).toEqual([
+        ["default", join(home, ".claude").toLowerCase(), "discovered"],
+        ["ferit", ferit.toLowerCase(), "discovered"],
+      ]);
+      // what runs under it is pointed at its directory, as under any profile but Claude's own
+      expect(claudeEnv(found[1]!.configDir, home).set).toEqual({ CLAUDE_CONFIG_DIR: found[1]!.configDir });
+    } else {
+      // a POSIX shell's wrapper, as on a Mac or Linux
+      writeFileSync(join(bin, "claude-ferit"), `#!/bin/sh\nexport CLAUDE_CONFIG_DIR="$HOME/.claude-ferit"\nexec claude "$@"\n`);
+      expect(profiles("", env, home).byHarness("claude").map((p) => p.name)).toEqual(["default", "ferit"]);
+    }
+    // declared, it is the user's as they declared it
+    const declared = profiles(`[[profiles]]\nharness = "claude"\nname = "mine"\nconfig_dir = ${tomlString(ferit)}\n`, env, home).byHarness("claude");
+    expect(declared.map((p) => [p.name, p.origin])).toEqual([
+      ["default", "discovered"],
+      ["mine", "user"],
+    ]);
+    expect(profiles("[sessions]\ndiscover = false\n", env, home).byHarness("claude")).toEqual([]);
   });
 
   test("Muse: its config home is discovered, signed in by a Meta login in auth.json, and a declared one is its XDG homes", () => {

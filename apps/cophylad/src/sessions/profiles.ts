@@ -1,6 +1,7 @@
-// Harness profiles: the discovered installation of each harness (its own directory, and the
-// one the daemon's environment names when that is another) plus the ones the user declared in
-// config. A Muse installation is its two homes, `<XDG_CONFIG_HOME>/muse` (the profile's
+// Harness profiles: the discovered installation of each harness (its own directory, the one
+// the daemon's environment names when that is another, and for Claude each account a
+// `claude-<name>` wrapper script sets CLAUDE_CONFIG_DIR to, `claude/wrappers.ts`) plus the
+// ones the user declared in config. A Muse installation is its two homes, `<XDG_CONFIG_HOME>/muse` (the profile's
 // directory, with its login) and `<XDG_DATA_HOME>/muse` (its sessions), so a declared one sets
 // `XDG_CONFIG_HOME` from its directory and names `XDG_DATA_HOME` in its env. Profiles are not a
 // table; discovery rebuilds them from files at start, at every `profile.list`, and when a login
@@ -33,6 +34,7 @@ import type { Config, ProfileConfig } from "../config/schema.ts";
 import type { Logger } from "../log.ts";
 import type { Store } from "../store/index.ts";
 import { isClaudeHome } from "./claude/start.ts";
+import { ClaudeWrappers } from "./claude/wrappers.ts";
 import { launchProblem, splitMode } from "./claude/launch-args.ts";
 import type { Launch } from "./claude/launch-args.ts";
 import { isWithin, pathKey } from "./paths.ts";
@@ -305,9 +307,12 @@ export class Profiles {
   private print = "";
   private built = false;
   private listeners = new Set<(change: ProfileChange) => void>();
+  /** The accounts the user's `claude-<name>` scripts start, each folder and script read again only when it changed. */
+  private wrappers: ClaudeWrappers;
 
   constructor(deps: ProfilesDeps) {
     this.deps = deps;
+    this.wrappers = new ClaudeWrappers({ env: deps.env ?? process.env, home: deps.home ?? homedir(), platform: deps.platform ?? process.platform });
     this.refresh();
   }
 
@@ -412,6 +417,10 @@ export class Profiles {
         ["codex", env["CODEX_HOME"]],
       ] as const) {
         if (named && !found.some(([h, dir]) => h === harness && profileKey(h, dir) === profileKey(h, named))) found.push([harness, named, basename(resolve(named)) || "env"]);
+      }
+      // Each account a `claude-<name>` wrapper the user runs points Claude at: theirs to connect to as any other.
+      for (const w of this.wrappers.list()) {
+        if (!found.some(([h, dir]) => h === "claude" && profileKey(h, dir) === profileKey("claude", w.dir))) found.push(["claude", w.dir, w.name]);
       }
       for (const [harness, dir, name] of found) out.push({ harness, pc: { name, config_dir: dir, args: [], env: {}, default: false, hooks: "http", harness }, origin: "discovered" });
     }
