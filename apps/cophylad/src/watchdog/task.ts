@@ -7,10 +7,9 @@
 
 /** The layout of the shared block: the beat and the current task, read by watchdog/worker.ts. */
 export const SHARED_BYTES = 64;
-/** Int32 slots: [0] the current task's id, [1] the beat's seconds part, [2] its milliseconds part. */
+/** Int32 slots: [0] the current task's id, [1] the beat, a count the main thread moves on each tick. */
 export const SLOT_TASK = 0;
-export const SLOT_BEAT_S = 1;
-export const SLOT_BEAT_MS = 2;
+export const SLOT_BEAT = 1;
 
 const MAX_LABELS = 4096;
 /** The id every label past the cap shares. */

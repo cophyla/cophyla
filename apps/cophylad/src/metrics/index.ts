@@ -50,6 +50,8 @@ export interface MetricsDeps {
   now?: () => number;
   /** No timer: the owner drives `tick()`. For tests. */
   manual?: boolean;
+  /** How late the daemon's loop ran since the previous sample (the watchdog's reading). */
+  loopLag?: () => MetricsSample["loop"] | undefined;
 }
 
 export interface MetricsSnapshot {
@@ -202,6 +204,8 @@ export class Metrics {
     if ([...this.subscribers.keys()].some((c) => guestOfSubscriber(c) === undefined)) this.refreshLimits();
     const limits = this.deps.limits?.latest();
     if (limits) sample.limits = limits;
+    const loop = this.deps.loopLag?.();
+    if (loop) sample.loop = loop;
     this.latestSample = sample;
     this.ring.push(sample);
     if (this.ring.length > RING_CAP) this.ring.splice(0, this.ring.length - RING_CAP);

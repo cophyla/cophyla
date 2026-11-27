@@ -55,6 +55,9 @@ export function rollup(samples: MetricsSample[], node: string, minute: number): 
     processes: foldForRollup(processes),
     llm,
   };
+  // how late the daemon ran: the minute's typical median and its worst
+  const loops = samples.flatMap((s) => (s.loop ? [s.loop] : []));
+  if (loops.length > 0) out.loop = { p50: round1(loops.reduce((a, l) => a + l.p50, 0) / loops.length), p99: Math.max(...loops.map((l) => l.p99)), max: Math.max(...loops.map((l) => l.max)) };
   if (gpus.size > 0) out.gpu = [...gpus.values()].map((g) => ({ name: g.name, util: round1(g.util / g.n), vramUsed: Math.round(g.vramUsed / g.n), vramTotal: g.vramTotal }));
   if (Object.keys(profiles).length > 0) out.profiles = profiles;
   return out;

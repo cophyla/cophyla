@@ -1788,6 +1788,12 @@ export const MetricsSample = z.object({
   profiles: z.record(ProfileId, ProfileTokens).optional(),
   /** Each profile's plan limits, the latest known, on every sample: not a delta. */
   limits: z.record(ProfileId, ProfileLimits).optional(),
+  /**
+   * How late the node's daemon ran what it was due to run since the previous sample, in
+   * milliseconds: the median, the 99th percentile and the worst. A rollup keeps the minute's
+   * median of medians and its worst.
+   */
+  loop: z.object({ p50: z.number().nonnegative(), p99: z.number().nonnegative(), max: z.number().nonnegative() }).optional(),
 });
 export type MetricsSample = z.infer<typeof MetricsSample>;
 

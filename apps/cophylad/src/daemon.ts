@@ -63,8 +63,9 @@ import { Policy } from "./gate/policy.ts";
 import { GeminiProvider } from "./llm/gemini.ts";
 import { Llm } from "./llm/index.ts";
 import type { Provider } from "./llm/index.ts";
-import { createLogger } from "./log.ts";
+import { createLogger, daemonSink } from "./log.ts";
 import type { Logger } from "./log.ts";
+import { Watchdog } from "./watchdog/index.ts";
 import type { LoginEnvNote } from "./login-env.ts";
 import { hostEngine } from "./metrics/engine.ts";
 import type { MetricsEngine } from "./metrics/engine.ts";
@@ -254,6 +255,10 @@ export interface DaemonOptions {
   brain?: boolean;
   /** Overrides `[assistant].enabled`. Under test the chat runs in no session unless a test asks for one: a suite never starts an agent on someone's account. */
   assistant?: boolean;
+  /** Runs the background jobs on a worker of their own (the default, but under test) or inline. */
+  backgroundWorker?: boolean;
+  /** Watches the event loop from a worker (the default, but under test). */
+  watchdog?: boolean;
   /** Replaces the embedding model behind recall: a fake for tests, `null` for full-text only. */
   embedder?: Embedder | null;
   /** The voice module's seams: the engines and the CPU mask, both faked in the tests. */
@@ -423,7 +428,14 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
   ensureDirs(p);
   ensureReadme(p.readme);
   const config = loadConfig(p);
-  const log = opts.log ?? createLogger(config.log.level);
+  // The daemon's own lines, buffered: to the file its spawner named, rotated, or to stderr (log.ts).
+  // A test's daemon writes as it always did.
+  const startEnv = opts.env ?? process.env;
+  const logTo = opts.log || startEnv["NODE_ENV"] === "test" ? undefined : daemonSink(startEnv);
+  const log = opts.log ?? createLogger(config.log.level, logTo?.sink);
+  // The event loop watched from a thread of its own: a stall is logged while it lasts, with what was running.
+  const watchdog = (opts.watchdog ?? startEnv["NODE_ENV"] !== "test") ? new Watchdog({ log: log.child("watchdog"), ...(logTo?.file ? { logFile: logTo.file } : {}) }) : undefined;
+  watchdog?.start();
   const tz = config.node.tz ?? nodeTz();
 
   // Before anything is opened: a loopback port a stopped daemon's leftovers still hold is freed
@@ -441,7 +453,9 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
   log.info("store open", { path: p.db, schema: version, optimizeMs: Math.round(performance.now() - optimizeAt) });
   // The long reads, the passive checkpoints and the machine's process list, off this thread: a
   // worker with its own connection, made once and kept. A store with no file has none.
-  const background: Background = p.db === ":memory:" ? new InlineBackground(store.db, log.child("background")) : new WorkerBackground({ path: p.db, cacheKib: WORKER_CACHE_KIB, log: log.child("background") });
+  // A test's daemon runs them inline unless it asks: Bun on Windows never frees a worker, and a suite starts hundreds of daemons.
+  const threaded = p.db !== ":memory:" && (opts.backgroundWorker ?? startEnv["NODE_ENV"] !== "test");
+  const background: Background = threaded ? new WorkerBackground({ path: p.db, cacheKib: WORKER_CACHE_KIB, log: log.child("background") }) : new InlineBackground(store.db, log.child("background"));
   if (opts.loginEnv) {
     const { shellPath: _shellPath, ...note } = opts.loginEnv;
     log.info("the login environment taken", note);
@@ -852,6 +866,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     sessions: { pids: () => sessions.pidsAll(), list: () => sessions.list() },
     partitions: { sessionNode: (id) => sessions.getAny(id)?.node, isPrivate: (node) => owners.isPrivate(node) },
     brainPid: () => brain?.pid,
+    loopLag: () => watchdog?.lag(),
     // tether's hosts count as sidecars: what a session's own tree does not claim of them (a terminal's console host) is theirs.
     sidecarPids: () => new Map([...sidecars.list().flatMap((s) => (s.pid !== undefined ? [[s.pid, s.name] as [number, string]] : [])), ...(tether?.hostPids() ?? []).map((pid) => [pid, "tether"] as [number, string]), ...(direct.pid !== undefined ? [[direct.pid, "cophyla-net"] as [number, string]] : [])]),
     // A subscriber named `link:…` is the primary watching this node: its samples go up the node link;
@@ -2579,6 +2594,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
       await background.stop();
       store.close();
       log.info("cophylad stopped");
+      await watchdog?.stop();
     },
   };
   stopper = daemon.stop;

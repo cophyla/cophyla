@@ -581,7 +581,8 @@
       ],
       "llm": { "gemini/flash": { "in": 12000, "out": 900 } },
       "profiles": { "prof_01ARZ3NDEKTSV4RRFFQ69G5FB8": { "in": 1200, "out": 800, "cached": 45000, "cost": 0.12 } },
-      "limits": { "prof_01ARZ3NDEKTSV4RRFFQ69G5FB8": { "at": 1758196790000, "session": { "percent": 4, "resetsAt": 1758211200000 }, "weekly": { "percent": 55, "resetsAt": 1758528000000 } } }
+      "limits": { "prof_01ARZ3NDEKTSV4RRFFQ69G5FB8": { "at": 1758196790000, "session": { "percent": 4, "resetsAt": 1758211200000 }, "weekly": { "percent": 55, "resetsAt": 1758528000000 } } },
+      "loop": { "p50": 0.4, "p99": 12.5, "max": 31 }
     }
   ],
   "ProfileTokens": [{ "in": 5200, "out": 810, "cached": 40000, "cost": 0.42 }, { "in": 12, "out": 3, "cached": 0 }],

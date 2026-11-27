@@ -8,7 +8,9 @@ import { COMMANDS, runCommand } from "./cli.ts";
 import type { Command } from "./cli.ts";
 import { ConfigError } from "./config/load.ts";
 import { guardSpawns } from "./inherit.ts";
+import { flushLogs } from "./log.ts";
 import { loginEnv } from "./login-env.ts";
+import { optOutOfEcoQos, setThreadLevel } from "./os/priority.ts";
 import { RESTART_ENV, waitForExit } from "./restart.ts";
 
 /** What the log keeps of a failure: its message and its stack. */
@@ -76,6 +78,11 @@ if (predecessor !== undefined && !(await waitForExit(Number(predecessor)))) {
 const login = await loginEnv(process.env);
 if (login) Object.assign(process.env, login.vars);
 
+// The daemon's thread answers the user: Windows keeps it at full speed when it decides the
+// process is in the background, and runs it a step above the threads of ordinary work.
+optOutOfEcoQos();
+setThreadLevel("above");
+
 try {
   const { startDaemon } = await import("./daemon.ts");
   const daemon = await startDaemon({
@@ -97,6 +104,7 @@ try {
   process.on("unhandledRejection", (reason) => daemon.log.error("a promise failed and nothing caught it", failure(reason)));
   process.on("uncaughtException", (e) => {
     daemon.log.error("an exception nothing caught; stopping", failure(e));
+    flushLogs();
     process.exit(1);
   });
 } catch (e) {

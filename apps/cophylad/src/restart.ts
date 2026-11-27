@@ -4,7 +4,7 @@
 // next daemon depends on who is attached: a desktop app on this machine starts cophylad
 // whenever it finds none, as after an update, so the daemon leaves it that; otherwise the
 // daemon starts its own successor: the same runtime, script, arguments, working directory
-// and environment, detached, its output appended to `data/cophylad.log`, told the
+// and environment, detached, writing its own `data/cophylad.log` (its stderr beside it), told the
 // predecessor's pid in `COPHYLAD_RESTART` so it waits for that process to be gone before it
 // opens the home. It is started once the daemon has stopped, never before: on Windows a child
 // started while the listeners are open would inherit their sockets, were the daemon's spawns
@@ -14,7 +14,9 @@
 
 import { spawn } from "node:child_process";
 import { closeSync, existsSync, openSync } from "node:fs";
+import { join, dirname } from "node:path";
 import { RpcError } from "@cophyla/protocol";
+import { LOG_FILE_ENV } from "./log.ts";
 import type { Logger } from "./log.ts";
 
 /** Names the predecessor's pid in a successor's environment. */
@@ -108,21 +110,28 @@ export class Restart {
   }
 }
 
-/** What a successor needs: the runtime, the script, and the log it writes to. */
+/** Where a successor's stderr goes, beside its log: what the runtime itself says, a panic among it. */
+export const stderrLogFor = (logPath: string): string => join(dirname(logPath), "cophylad.stderr.log");
+
+/** What a successor needs: the runtime, the script, and the logs it writes to. */
 export function checkSuccessor(logPath: string): void {
   if (!existsSync(process.execPath)) throw new Error(`the runtime ${process.execPath} is gone`);
   const script = process.argv[1];
   if (!script || !existsSync(script)) throw new Error(`the daemon's script ${script ?? "(none)"} is gone`);
   closeSync(openSync(logPath, "a"));
+  closeSync(openSync(stderrLogFor(logPath), "a"));
 }
 
-/** The next daemon as this one was started: detached, no console, its output appended to the log. */
+/**
+ * The next daemon as this one was started: detached, no console. It writes its own log, told
+ * where in `COPHYLAD_LOG_FILE`, and rotates it; its stdout and stderr go to the file beside it.
+ */
 export function spawnSuccessor(logPath: string): number {
-  const fd = openSync(logPath, "a");
+  const fd = openSync(stderrLogFor(logPath), "a");
   try {
     const child = spawn(process.execPath, process.argv.slice(1), {
       cwd: process.cwd(),
-      env: { ...process.env, [RESTART_ENV]: String(process.pid) },
+      env: { ...process.env, [RESTART_ENV]: String(process.pid), [LOG_FILE_ENV]: logPath },
       detached: true,
       windowsHide: true,
       stdio: ["ignore", fd, fd],

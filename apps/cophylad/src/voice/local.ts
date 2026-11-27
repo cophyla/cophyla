@@ -4,16 +4,17 @@
 // in the speech process (`speech-process.ts`), which exists only while a turn needs it, so
 // what this factory hands the voice module for them are stand-ins that start it.
 //
-// One job beyond wiring: before the first engine loads, the daemon pins itself to the
-// performance cores on a hybrid CPU, because everything below this line is inference and
-// Windows will otherwise put some of it on the efficiency cores, where it runs three times
-// slower (spike 10). The pin is applied once and inherited by every process it starts.
+// The daemon itself is never pinned to cores: pinned, it held every process it starts (the
+// agents' sessions with them) to the performance cores, and on a loaded machine its own
+// thread could not move to an idle efficiency core. It opts out of EcoQoS instead (main.ts).
+// The speech process, where the heavy inference runs, is still pinned to the performance
+// cores when `[voice] cpu_affinity` asks (speech-process.ts): a streaming decode on an
+// efficiency core takes three times as long (spike 10).
 
 import { join } from "node:path";
 import type { VoiceConfig } from "../config/schema.ts";
 import type { Logger } from "../log.ts";
 import type { Sidecars } from "../sidecars/index.ts";
-import { applyProcessAffinity } from "./affinity.ts";
 import { chatterboxEngine } from "./chatterbox.ts";
 import type { EngineFactory, EngineLoadOptions, SttEngine, TtsEngine, VadEngine, WakeHeadInfo, WakeModel } from "./engines.ts";
 import { allWakeHeads, OpenWakeWord } from "./openwakeword.ts";
@@ -118,12 +119,6 @@ export function localEngines(deps: LocalEnginesDeps): LocalEngines {
   const dev = deps.modelsDir !== undefined;
   useSherpaFrom({ dataDir: deps.dataDir, dev });
   const speech = localSpeech(deps);
-  let pinned = false;
-  const pin = () => {
-    if (pinned || deps.affinity === undefined) return;
-    pinned = true;
-    applyProcessAffinity(deps.affinity, deps.log);
-  };
   const nospin = () => ensureNospinConfig(deps.dataDir);
   let watcher: ((stage: SpeechStage, engine: string, failure: string | undefined) => void) | undefined;
   const proc = new SpeechProcess({
@@ -158,7 +153,6 @@ export function localEngines(deps: LocalEnginesDeps): LocalEngines {
     },
 
     async wake(dir: string, config: VoiceConfig): Promise<WakeModel> {
-      pin();
       const model = await OpenWakeWord.load(dir, {
         heads: config.wake_model,
         ...(config.wake_threshold !== undefined ? { threshold: config.wake_threshold } : {}),
@@ -179,12 +173,10 @@ export function localEngines(deps: LocalEnginesDeps): LocalEngines {
     },
 
     async vad(dir: string, config: VoiceConfig, opts?: { maxSpeechMs?: number }): Promise<() => VadEngine> {
-      pin();
       return loadSilero(dir, { minSilenceMs: config.vad_min_silence_ms, ...(opts?.maxSpeechMs !== undefined ? { maxSpeechMs: opts.maxSpeechMs } : {}) });
     },
 
     async stt(dir: string, config: VoiceConfig, opts?: EngineLoadOptions): Promise<SttEngine> {
-      pin();
       const engine = localSttEngine(config.stt);
       if (!engine) throw new Error(`no local transcription engine is called ${config.stt}`);
       proc.set("stt", { engine, dir, threads: config.stt_threads, ...(config.stt_language ? { language: config.stt_language } : {}) });
@@ -194,7 +186,6 @@ export function localEngines(deps: LocalEnginesDeps): LocalEngines {
     },
 
     async tts(dir: string | undefined, config: VoiceConfig, _sidecars: Sidecars, opts?: EngineLoadOptions): Promise<TtsEngine> {
-      pin();
       if (config.tts === "chatterbox") {
         proc.set("tts", undefined);
         if (!deps.ttsPy) throw new Error("the speech sidecar is not configured on this node");

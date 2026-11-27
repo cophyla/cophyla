@@ -14,6 +14,11 @@ import { loadNemotron } from "./nemotron.ts";
 import { loadOrt, useSherpaFrom } from "./runtime.ts";
 import { loadOfflineStt } from "./sherpa-stt.ts";
 import { loadSherpaTts } from "./sherpa-tts.ts";
+import { optOutOfEcoQos } from "../os/priority.ts";
+
+// The user waits on every word this process hears or says: Windows is not to slow it down as
+// a background process (os/priority.ts).
+optOutOfEcoQos();
 
 const WARM_UP = "Ready.";
 

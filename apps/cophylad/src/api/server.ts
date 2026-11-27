@@ -99,6 +99,7 @@ import { RemoteProxy } from "../remote/proxy.ts";
 import type { Bridge } from "../remote/proxy.ts";
 import { viewHeaders, ViewTickets } from "./tickets.ts";
 import { lanAddress } from "./tls.ts";
+import { withTask } from "../watchdog/task.ts";
 
 type UpdateState = ClientNotificationParams<"update.state">;
 type VoiceStateParams = ClientNotificationParams<"voice.state">;
@@ -984,7 +985,8 @@ export function startApi(deps: ApiDeps, opts: ListenerOptions = {}): ApiServer {
           const refused = refuseRequest(client.access ?? FULL, name, params as never, registry.look);
           if (refused) throw new RpcError("denied", refused);
           const mctx: MethodContext = { ...ctx, client, principal, origin: port.origin, listener: port.listener, ...(port.forward ? { forward: true } : {}), ...(port.browser ? { browser: true } : {}), ...lifetimeOf(port) };
-          return (method as { handler: (p: unknown, c: MethodContext) => unknown }).handler(params, mctx);
+          // the method's synchronous part is the watchdog's task while it runs
+          return withTask(`api: ${req.method}`, () => (method as { handler: (p: unknown, c: MethodContext) => unknown }).handler(params, mctx));
         },
       );
       reply(success(req.id, clientResult(name, result, client.access ?? FULL, registry.look)));
