@@ -1,5 +1,5 @@
 {
-  "generatedAt": 1795589160178,
+  "generatedAt": 1795813469762,
   "releases": [
     {
       "component": "brain",
@@ -39,6 +39,23 @@
       "sha256": "a4dd69ea520954f6be0c22a7693866a2078bca8f568b98669f6a6edb40b19ad7",
       "signature": "ed25519:C92Nu+1XziZIzyZkJnCvyfA0J5GPqJtS1huBlHFCY3O0CNONHUpa5LL0H6TNhEafql2RS8Rd7PQQTc7BsiHLBA==",
       "publishedAt": 1791285528651
+    },
+    {
+      "component": "platform",
+      "name": "platform-0.32.0-macos-arm64.tar.gz",
+      "version": "0.32.0",
+      "channel": "stable",
+      "os": "macos",
+      "arch": "arm64",
+      "protocol": {
+        "min": 1,
+        "max": 1
+      },
+      "url": "https://github.com/cophyla/cophyla/releases/download/platform-v0.32.0/platform-0.32.0-macos-arm64.tar.gz",
+      "size": 101363828,
+      "sha256": "3932f17189c1d2feb4f8e96953a8443a36bcbfffb535e8ad78666602ba5d2d37",
+      "signature": "ed25519:enHN4IYtFVgZFm85MjbTRwmEYbs8qiGtY31pQ8SCF1hNKmHN++2xhQMxiZSmuUfEUrf8LDOAWHFc+PYvuxfLAA==",
+      "publishedAt": 1795812533719
     },
     {
       "component": "platform",
