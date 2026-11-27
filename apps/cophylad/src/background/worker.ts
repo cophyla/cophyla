@@ -1,14 +1,13 @@
 // The background worker's thread: its own connection to the store, read-only by `query_only`
 // (writes stay on the daemon's connection, the single writer), a modest page cache, and the
-// jobs of jobs.ts run one at a time, `read` calls ahead of `bulk` ones. The thread lowers its
-// own priority for each job by its class: background mode for bulk work, below normal for a
-// read someone waits on. The connection is closed before the thread ends, when the daemon says
+// jobs of jobs.ts run one at a time, `read` calls ahead of `bulk` ones, at the thread's own
+// priority (one lowered held the daemon's thread up on a loaded machine, as below). The
+// connection is closed before the thread ends, when the daemon says
 // stop, so the daemon's own connection is the last to close.
 
 import { Database } from "bun:sqlite";
 import { isMainThread } from "node:worker_threads";
 import type { Logger } from "../log.ts";
-import { setThreadLevel } from "../os/priority.ts";
 import { JOBS } from "./jobs.ts";
 import type { CallMessage, FromWorker, ToWorker } from "./protocol.ts";
 
@@ -59,7 +58,9 @@ async function drain(): Promise<void> {
         post({ kind: "failed", id: call.id, error: `no job ${call.job}` });
         continue;
       }
-      setThreadLevel(call.class === "read" ? "below" : "background");
+      // At the thread's own priority: one lowered (Windows' background mode, or below normal) was
+      // starved on a loaded machine while the daemon's thread waited on something it held, and the
+      // daemon froze for up to a minute; the long jobs are paced by the scheduler instead.
       const t0 = performance.now();
       try {
         const result = await job(db, call.args as never, { part: (part) => post({ kind: "part", id: call.id, part }), log: jobLog });

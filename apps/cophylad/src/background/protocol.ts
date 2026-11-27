@@ -1,7 +1,7 @@
 // The messages between the daemon and its background worker. A call names a job and a class:
-// `read` for what a client is waiting on (a snapshot, a reconcile), run below normal priority
-// and ahead of the rest; `bulk` for work nobody waits on (fills, backfills, compaction,
-// sampling's slow parts), run in Windows' background mode. The worker answers each call once,
+// `read` for what something waits on (a sample, a command line, a snapshot, a checkpoint), on a
+// worker of its own; `bulk` for work nobody waits on (fills, backfills, compaction), on another.
+// Both run at their thread's own priority. The worker answers each call once,
 // after any parts, and says so when its own code logs.
 
 export type JobClass = "read" | "bulk";

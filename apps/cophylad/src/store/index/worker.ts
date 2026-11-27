@@ -4,17 +4,16 @@
 // that narrows the vector leg reads every prose chunk the filter admits: all of it here, on a
 // connection of the worker's own (read-only by `query_only`; the daemon's connection writes).
 //
-// It answers three things. `embed`: vectors for texts, one text at a time, in background mode,
+// It answers three things, at the thread's own priority. `embed`: vectors for texts, one text at a time,
 // a recall waiting being answered between two texts. `put` and `remove`: the vector index kept
 // in step with what the daemon wrote, in the order it wrote it. `recall`: both legs and the
-// hydration, below normal priority, on full text alone until the vectors are loaded. Messages
+// hydration, on full text alone until the vectors are loaded. Messages
 // that arrive while the connection opens wait for it.
 
 import { Database } from "bun:sqlite";
 import { isMainThread } from "node:worker_threads";
 import type { CapabilityParams, Hit } from "@cophyla/protocol";
 import type { Logger } from "../../log.ts";
-import { setThreadLevel } from "../../os/priority.ts";
 import { loadEmbedder } from "./embed.ts";
 import type { Embedder } from "./embed.ts";
 import type { RecallScope } from "./filters.ts";
@@ -76,8 +75,9 @@ async function init(m: Extract<ToIndexWorker, { kind: "init" }>): Promise<void> 
   early = undefined;
   for (const w of waiting) heard(w);
   let loaded = 0;
+  // At the thread's own priority, as the background worker's: a lowered one was starved on a
+  // loaded machine while the daemon's thread waited on something it held.
   if (m.modelDir && db) {
-    setThreadLevel("background");
     embedder = await loadEmbedder(m.modelDir, log);
     if (embedder) {
       const index = new JsVectorIndex(embedder.dim, m.maxRows);
@@ -132,7 +132,6 @@ async function drain(): Promise<void> {
       if (stopping) break;
       const r = recalls.shift();
       if (r) {
-        setThreadLevel("below");
         try {
           const hits = db ? await recall({ db, scope: r.scope, ...(embedder && vectors ? { embedder, vectors } : {}) }, r.params) : [];
           post({ kind: "recalled", id: r.id, hits });
@@ -148,7 +147,6 @@ async function drain(): Promise<void> {
         post({ kind: "failed", id: e.id, error: "no embedding model on the index worker" });
         continue;
       }
-      setThreadLevel("background");
       try {
         const [v] = await embedder.embed([e.texts[e.done.length]!]);
         e.done.push(v!);

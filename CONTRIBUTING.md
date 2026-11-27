@@ -40,7 +40,7 @@ and why, sentences in the docs, no history in either.
 
 The daemon and the desktop app stay responsive on a loaded machine, and the rules for that are
 in `apps/cophylad/README.md` (Responsiveness): nothing unbounded on the daemon's main thread or
-the app's UI thread, heavy work on workers at a lower priority, periodic work incremental,
+the app's UI thread, heavy work on workers (at their own priority, never lowered), periodic work incremental,
 background work yielding to the user, real-time input carrying its own times, and stalls
 logged. The suite enforces the store's half: a statement on the daemon's connection that scans
 a big table fails it, unless it says why with `/* scan-ok: reason */`. The protocol package is the boundary

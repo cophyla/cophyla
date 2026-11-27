@@ -1,8 +1,9 @@
-// How Windows schedules the daemon's threads and processes. A worker running background work
-// (embedding, backfills, retention) puts its own thread in background mode, which lowers its
-// CPU, I/O and memory priority together, so on a busy machine it waits for idle time instead of
-// taking it from the user's work or from the daemon's own main thread; a read a client waits
-// on runs below normal, and the main thread a step above. The daemon, the speech process and
+// How Windows schedules the daemon's threads and processes. The main thread runs a step above
+// normal; the workers stay at their own priority. A worker in background mode (its CPU, I/O and
+// memory priority lowered together), or only below normal, was starved on a loaded machine while
+// the daemon's thread waited on something it held, and the daemon froze for up to a minute and
+// took that long to start: measured, 20-72 s held at 85% CPU against none at normal. The
+// background levels stay here for a thread nothing else waits on. The daemon, the speech process and
 // the app also opt out of EcoQoS: a process Windows decides is in the background is put on the
 // efficiency cores at low clocks, and Cophyla's main thread answers the user, so it is not.
 //
