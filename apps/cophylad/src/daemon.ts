@@ -642,7 +642,15 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
   };
   // A session in tmux is raised through the client attached to it, which may be in an editor's
   // terminal: tmux outermost, then the editor windows, then the platform's own raise.
-  const platformRaiser = withEditorWindows(withProcessTable(defaultRaiser(process.platform, { env, log: sessionsLog.child("focus") }), processes), { dir: join(p.home, "editors"), log: sessionsLog.child("focus") });
+  const platformRaiser = withEditorWindows(withProcessTable(
+      defaultRaiser(process.platform, {
+        env,
+        log: sessionsLog.child("focus"),
+        // read on the background worker: a call of a millisecond, five under load
+        ...(background.threaded ? { commandLine: (pid: number) => background.call<string | false | null>("proc.commandLine", { pid }, { class: "read" }).then((r) => (r === false ? undefined : r)) } : {}),
+      }),
+      processes,
+    ), { dir: join(p.home, "editors"), log: sessionsLog.child("focus") });
   const raiser = opts.raiser ?? (process.platform === "win32" ? platformRaiser : withTmux(platformRaiser));
   // tether, which the sessions cophylad starts run in, so what the user sends them is typed as theirs.
   // The PATH the user's own shells have, where a command they type is found: the login shell's

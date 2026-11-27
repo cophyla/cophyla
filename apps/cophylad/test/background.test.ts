@@ -59,6 +59,10 @@ describe("the background worker", () => {
       session(t.store, "sess_a");
       for (let i = 0; i < 50; i++) t.store.sessionEvents.append({ session: "sess_a", at: i, kind: "user_turn", payload: { text: `hello ${i}` } });
       expect(await bg.call<number>("rowid.max", { table: "session_events" })).toBe(50);
+      // a process's command line, read there (Windows reads it natively; elsewhere there is no native way)
+      const line = await bg.call<string | false | null>("proc.commandLine", { pid: process.pid });
+      if (process.platform === "win32") expect(String(line).toLowerCase()).toContain("bun");
+      else expect(line).toBeNull();
       const cp = await bg.call<{ busy: number; log: number; checkpointed: number }>("checkpoint");
       expect(cp.busy).toBe(0);
       expect(cp.checkpointed).toBe(cp.log);

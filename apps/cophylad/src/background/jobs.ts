@@ -11,6 +11,7 @@ import type { Logger } from "../log.ts";
 import { hostEngine } from "../metrics/engine.ts";
 import type { MetricsEngine } from "../metrics/engine.ts";
 import { foldForRollup } from "../metrics/owners.ts";
+import { windowsCommandLine } from "../metrics/windows.ts";
 import type { WorkerSample } from "../metrics/worker-engine.ts";
 import { backupObjects } from "../cloud/reconcile.ts";
 import { readSnapshot } from "../store/index.ts";
@@ -131,6 +132,11 @@ function replicaSnapshot(db: Database, args: { excludeKvNs: string[]; privateNod
 }
 
 export const JOBS: Record<string, Job> = {
+  // a process's command line (Windows): the line, nothing when it cannot be read, null where there is no native way
+  "proc.commandLine": ((_db: Database, args: { pid: number }) => {
+    const line = windowsCommandLine(args.pid);
+    return line === undefined ? false : line;
+  }) as Job,
   "backup.objects": backupObjects as Job,
   "replica.snapshot": replicaSnapshot as Job,
   "metrics.compact": metricsCompact as Job,

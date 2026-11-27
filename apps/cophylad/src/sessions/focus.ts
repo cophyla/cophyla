@@ -198,8 +198,8 @@ Write-Output $w.CommandLine
 /** How long a command-line read may take: an ask waits on it. */
 const COMMAND_LINE_TIMEOUT_MS = 5000;
 
-/** A command line read natively: the line, `undefined` when the process cannot be read, `null` when there is no native way here. */
-export type NativeCommandLine = (pid: number) => string | undefined | null;
+/** A command line read natively: the line, `undefined` when the process cannot be read, `null` when there is no native way here. On the background worker in the daemon. */
+export type NativeCommandLine = (pid: number) => string | undefined | null | Promise<string | undefined | null>;
 
 export class WindowsRaiser implements WindowRaiser {
   private exec: Exec;
@@ -222,7 +222,7 @@ export class WindowsRaiser implements WindowRaiser {
 
   /** Natively (`windowsCommandLine`), and through PowerShell's CIM only where that cannot be done. */
   async commandLine(pid: number): Promise<string[] | undefined> {
-    const native = this.native(pid);
+    const native = await this.native(pid);
     if (native !== null) return native ? splitWindowsCommandLine(native) : undefined;
     const r = await this.powershell(COMMAND_LINE_SCRIPT, pid, { timeoutMs: COMMAND_LINE_TIMEOUT_MS });
     const line = r.out.trim();
@@ -621,10 +621,10 @@ export class UnsupportedRaiser implements WindowRaiser {
   }
 }
 
-export function defaultRaiser(platform: NodeJS.Platform = process.platform, opts: { env?: Record<string, string | undefined>; log?: Logger } = {}): WindowRaiser {
+export function defaultRaiser(platform: NodeJS.Platform = process.platform, opts: { env?: Record<string, string | undefined>; log?: Logger; commandLine?: NativeCommandLine } = {}): WindowRaiser {
   switch (platform) {
     case "win32":
-      return new WindowsRaiser();
+      return new WindowsRaiser(undefined, opts.commandLine);
     case "darwin":
       return new DarwinRaiser({ ...(opts.log ? { log: opts.log } : {}) });
     case "linux":
