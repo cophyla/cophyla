@@ -23,6 +23,8 @@ export interface JobContext {
   read<T>(job: string, args?: unknown, opts?: CallOptions): Promise<T>;
   /** Waits this long, the slice over meanwhile; cut short when the scheduler stops. */
   sleep(ms: number): Promise<void>;
+  /** Runs `between` with the slice over meanwhile: a wait on another thread is no slice's. */
+  pauseFor<T>(between: () => Promise<T>): Promise<T>;
   /** The scheduler is stopping: the job returns at its next step. */
   readonly stopping: boolean;
   readonly log: Logger;

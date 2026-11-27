@@ -2358,8 +2358,9 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
       class: "spend",
       delayMs: 30_000,
       everyMs: 3_600_000,
-      run: async () => {
-        await spendBackfill.run();
+      // the reading is the bulk worker's: its wait is no slice of this thread's
+      run: async (ctx) => {
+        await ctx.pauseFor(() => spendBackfill.run());
       },
     });
   }
