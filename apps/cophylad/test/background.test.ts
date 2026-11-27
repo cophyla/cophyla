@@ -15,7 +15,7 @@ import { InlineBackground, LanedBackground, WorkerBackground } from "../src/back
 import type { CompactedMinute } from "../src/background/jobs.ts";
 import { Maintenance } from "../src/background/maintenance.ts";
 import { Bus } from "../src/bus.ts";
-import { fileSink, rotatedName, silentLogger } from "../src/log.ts";
+import { bufferedSink, fileSink, rotatedName, silentLogger } from "../src/log.ts";
 import { foldForRollup } from "../src/metrics/owners.ts";
 import type { SampleProcess } from "../src/metrics/owners.ts";
 import { fillClears } from "../src/store/clears.ts";
@@ -269,6 +269,17 @@ describe("stored minutes", () => {
 });
 
 describe("the log writer", () => {
+  test("a daemon's last lines are written as it exits, a write still in flight among them, in order", async () => {
+    const written: string[] = [];
+    // the file write the exit abandons: it never finishes
+    const sink = bufferedSink(() => new Promise<void>(() => {}), (chunk) => written.push(chunk));
+    sink("first");
+    await sleep(150);
+    sink("last");
+    sink.flushSync();
+    expect(written.join("")).toBe("first\nlast\n");
+  });
+
   test("lines are written in order, a tenth of a second at a time, and the file rotates by size", async () => {
     const dir = mkdtempSync(join(tmpdir(), "cophyla-test-log-"));
     const path = join(dir, "cophylad.log");

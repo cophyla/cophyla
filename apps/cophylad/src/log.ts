@@ -96,13 +96,17 @@ export interface BufferedSink {
 
 /**
  * A sink that buffers lines and hands them to `write` a tenth of a second or 64 KB at a time,
- * one write in flight at a time, in order; `writeSync` takes what is left as the process exits.
+ * one write in flight at a time, in order; `writeSync` takes what is left as the process exits,
+ * a write still in flight included (a daemon's last lines are written as it stops, and an
+ * exit abandons the write the loop would have finished).
  */
 export function bufferedSink(write: (chunk: string) => Promise<void>, writeSync: (chunk: string) => void): BufferedSink {
   let buf: string[] = [];
   let bytes = 0;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let chain: Promise<void> = Promise.resolve();
+  /** What was handed to `write` and is not known written yet, in order. */
+  let inflight: string[] = [];
   const take = (): string => {
     const chunk = buf.join("");
     buf = [];
@@ -114,9 +118,16 @@ export function bufferedSink(write: (chunk: string) => Promise<void>, writeSync:
   const flush = (): Promise<void> => {
     if (buf.length === 0) return chain;
     const chunk = take();
-    chain = chain.then(() => write(chunk)).catch(() => {
-      // a write that failed loses its lines, never the daemon
-    });
+    inflight.push(chunk);
+    chain = chain
+      .then(() => write(chunk))
+      .catch(() => {
+        // a write that failed loses its lines, never the daemon
+      })
+      .then(() => {
+        const i = inflight.indexOf(chunk);
+        if (i >= 0) inflight.splice(i, 1);
+      });
     return chain;
   };
   const sink = ((line: string) => {
@@ -129,9 +140,11 @@ export function bufferedSink(write: (chunk: string) => Promise<void>, writeSync:
     }
   }) as BufferedSink;
   sink.flushSync = () => {
-    if (buf.length === 0) return;
+    const all = [...inflight, ...(buf.length > 0 ? [take()] : [])];
+    inflight = [];
+    if (all.length === 0) return;
     try {
-      writeSync(take());
+      writeSync(all.join(""));
     } catch {
       // as above
     }
