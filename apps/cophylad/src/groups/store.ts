@@ -134,6 +134,11 @@ export class GroupStore {
     this.store.kv.put(GROUPS_KV_NS, g.id, g);
   }
 
+  /** Moves with every write to a group's row. */
+  generation(): string {
+    return this.store.kv.generation(GROUPS_KV_NS);
+  }
+
   /** Drops a group with its posts and its log. */
   delete(id: string): void {
     this.store.kv.delete(GROUPS_KV_NS, id);

@@ -219,6 +219,22 @@ describe("store", () => {
     s.close();
   });
 
+  test("a kv namespace's generation moves with each write to it, and with no other's", () => {
+    const s = open();
+    const wake = s.kv.generation("wake");
+    const gate = s.kv.generation("gate");
+    s.kv.put("wake", "rules", { a: 1 });
+    const put = s.kv.generation("wake");
+    expect(put).not.toBe(wake);
+    expect(s.kv.generation("gate")).toBe(gate);
+    // a delete of nothing is no write
+    s.kv.delete("wake", "none");
+    expect(s.kv.generation("wake")).toBe(put);
+    s.kv.delete("wake", "rules");
+    expect(s.kv.generation("wake")).not.toBe(put);
+    s.close();
+  });
+
   test("audit rows round-trip as AuditEntry, with optional fields absent rather than null", () => {
     const s = open();
     const e: AuditEntry = {

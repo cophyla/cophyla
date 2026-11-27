@@ -306,7 +306,13 @@ export class Store {
 
   // --- kv ---------------------------------------------------------------------------------
 
+  /** Each namespace's writes since the store opened, and the snapshots that replaced them all: a reader's cache holds while its generation does. */
+  private readonly kvGens = new Map<string, number>();
+  private kvEpoch = 0;
+
   readonly kv = {
+    /** A namespace's generation: it moves with every write to it. */
+    generation: (ns: string): string => `${this.kvEpoch}:${this.kvGens.get(ns) ?? 0}`,
     get: (ns: string, key: string): unknown => {
       const row = this.db.query("SELECT value FROM kv WHERE ns = $ns AND key = $key").get({ ns, key }) as { value: string } | null;
       return row ? JSON.parse(row.value) : undefined;
@@ -322,11 +328,15 @@ export class Store {
           "INSERT INTO kv (ns, key, value, updated_at) VALUES ($ns, $key, $value, $now) ON CONFLICT(ns, key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
         )
         .run({ ns, key, value: json(value), now });
+      this.kvGens.set(ns, (this.kvGens.get(ns) ?? 0) + 1);
       this.wrote("kv", "upsert", { ns, key, value, updatedAt: now } satisfies KvRow);
     },
     delete: (ns: string, key: string): boolean => {
       const gone = this.db.query("DELETE FROM kv WHERE ns = $ns AND key = $key").run({ ns, key }).changes > 0;
-      if (gone) this.wrote("kv", "delete", { ns, key });
+      if (gone) {
+        this.kvGens.set(ns, (this.kvGens.get(ns) ?? 0) + 1);
+        this.wrote("kv", "delete", { ns, key });
+      }
       return gone;
     },
     list: (ns: string, prefix = ""): string[] => {
@@ -1360,6 +1370,7 @@ export class Store {
         const kept = [opts.selfNode, ...this.privateNodes()];
         this.db.query(`DELETE FROM workspaces WHERE node NOT IN (${kept.map((_, i) => `$n${i}`).join(", ")})`).run(Object.fromEntries(kept.map((n, i) => [`n${i}`, n])));
         const keep = opts.keepKvNs;
+        this.kvEpoch++;
         if (keep.length === 0) this.db.exec("DELETE FROM kv /* scan-ok: a replica's snapshot replaces it */");
         else this.db.query(`DELETE FROM kv WHERE ns NOT IN (${keep.map((_, i) => `$ns${i}`).join(", ")}) /* scan-ok: a replica's snapshot replaces it */`).run(Object.fromEntries(keep.map((ns, i) => [`ns${i}`, ns])));
         for (const t of snapshot.tables.threads as Thread[]) this.threads.upsert(t);

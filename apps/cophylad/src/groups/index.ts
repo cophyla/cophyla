@@ -307,6 +307,33 @@ export class Groups {
     return g;
   }
 
+  /**
+   * The groups a member is in, by its key: a session's every change looks at its own groups
+   * alone, through an index of the members kept while no group's row is written.
+   */
+  private groupsOf(key: string): GroupRow[] {
+    let at = this.groupMembers;
+    if (!at || at.gen !== this.rows.generation()) {
+      const byKey = new Map<string, string[]>();
+      for (const g of this.all()) {
+        for (const m of g.members) {
+          const ids = byKey.get(m.key);
+          if (!ids) byKey.set(m.key, [g.id]);
+          else if (ids.at(-1) !== g.id) ids.push(g.id);
+        }
+      }
+      at = this.groupMembers = { gen: this.rows.generation(), byKey };
+    }
+    const out: GroupRow[] = [];
+    for (const id of at.byKey.get(key) ?? []) {
+      const g = this.get(id);
+      if (g) out.push(g);
+    }
+    return out;
+  }
+
+  private groupMembers?: { gen: string; byKey: Map<string, string[]> };
+
   private all(): GroupRow[] {
     return this.rows.list().map((g) => this.get(g.id) ?? g);
   }
@@ -2091,7 +2118,7 @@ export class Groups {
     if (!this.deps.routes()) return;
     const key = agentKey(s.id);
     let names: Map<string, { alias: string }> | undefined;
-    for (const g of this.all()) {
+    for (const g of this.groupsOf(key)) {
       const m = g.members.find((x) => x.key === key);
       if (!m || !this.mine(m)) continue;
       const ended = s.status === "ended";
