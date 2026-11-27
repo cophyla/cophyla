@@ -12,6 +12,7 @@ import { hostEngine } from "../metrics/engine.ts";
 import type { MetricsEngine } from "../metrics/engine.ts";
 import { foldForRollup } from "../metrics/owners.ts";
 import type { WorkerSample } from "../metrics/worker-engine.ts";
+import { backupObjects } from "../cloud/reconcile.ts";
 import { readSnapshot } from "../store/index.ts";
 import { spendBackfillJob } from "../usage/backfill-worker.ts";
 
@@ -130,6 +131,7 @@ function replicaSnapshot(db: Database, args: { excludeKvNs: string[]; privateNod
 }
 
 export const JOBS: Record<string, Job> = {
+  "backup.objects": backupObjects as Job,
   "replica.snapshot": replicaSnapshot as Job,
   "metrics.compact": metricsCompact as Job,
   "metrics.sample": metricsSample as Job,

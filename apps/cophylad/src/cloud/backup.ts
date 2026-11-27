@@ -13,7 +13,6 @@
 // objects pulled, opened, and applied as a backup node applies a snapshot, with the brain
 // stopped around it and every client closed after, so each view reloads its picture.
 
-import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { RpcError } from "@cophyla/protocol";
@@ -24,9 +23,13 @@ import { snapshotTree } from "../editable/watcher.ts";
 import type { Logger } from "../log.ts";
 import { GROUP_LOG_KV_NS, GROUP_POSTS_KV_NS, GROUPS_KV_NS, RESERVED_KV_NS } from "../grants/namespaces.ts";
 import { EXCLUDED_KV_NS, editableFiles, fileRecord, safePath } from "../nodes/replication.ts";
-import type { KvRow, Store, StoreWrite } from "../store/index.ts";
+import type { BackupSyncRow, KvRow, Store, StoreWrite } from "../store/index.ts";
 import { BackupKeyFile, MAX_PLAINTEXT_BYTES, deriveKeys, newKdf, objectKey, open, sameKeyId, seal } from "./backup-crypto.ts";
 import type { BackupKeys } from "./backup-crypto.ts";
+import { hashPlain, objectOf, rowOf, tableObjects } from "./reconcile.ts";
+import type { ObjectsRead, Plain } from "./reconcile.ts";
+import { InlineBackground } from "../background/client.ts";
+import type { Background } from "../background/client.ts";
 import type { LinkRequestOptions } from "./link.ts";
 
 /**
@@ -53,9 +56,8 @@ const PROGRESS_EVERY_OBJECTS = 20;
 const FILE_KINDS: Record<string, BackupKind> = { memory: "memory", prompts: "prompts", tools: "tools", hooks: "hooks", views: "views" };
 export const BACKUP_KINDS: readonly BackupKind[] = ["memory", "prompts", "chat", "tasks", "workspaces", "state", "tools", "hooks", "views"];
 
-/** A backed-up object's plaintext: a row with its table, or a file with its content. */
-type RowObject = { id: string; table: "threads" | "messages" | "tasks" | "workspaces" | "kv"; row: unknown };
-type Plain = RowObject | ReplicaFile;
+/** Object lines the reconcile reads between two turns of the loop. */
+const RECONCILE_SLICE = 2000;
 
 interface Built {
   kind: BackupKind;
@@ -83,6 +85,8 @@ export interface BackupPaths {
 
 export interface BackupSyncDeps {
   store: Store;
+  /** Where the reconcile's whole read runs: the background worker; the store's own connection otherwise. */
+  background?: Background;
   paths: BackupPaths;
   log: Logger;
   nodeId: string;
@@ -110,7 +114,6 @@ export interface BackupSyncDeps {
   workspaceDebounceMs?: number;
 }
 
-const sha256 = (b: Buffer | string): string => createHash("sha256").update(b).digest("hex");
 
 /** The kind of an editable file from its home-relative path; nothing for a path outside the five directories. */
 export function fileKind(rel: string): BackupKind | undefined {
@@ -129,6 +132,8 @@ export class BackupSync {
   private inflight = 0;
   private queue: (() => Promise<void>)[] = [];
   private queued = new Set<string>();
+  /** While a reconcile reads: the objects written meanwhile, by kind and id. */
+  private writtenSince?: Set<string>;
   /** The server's versions, from the last list and every acknowledged put, so a takeover continues the count. */
   private remoteVersions = new Map<string, number>();
   private remote?: BackupState["remote"] & { keyId: string };
@@ -283,6 +288,7 @@ export class BackupSync {
 
   private schedule(kind: BackupKind, id: string, delayMs: number): void {
     const k = `${kind}\0${id}`;
+    this.writtenSince?.add(k);
     const have = this.pending.get(k);
     if (have) return;
     const p: Pending = { kind, id };
@@ -334,17 +340,7 @@ export class BackupSync {
    * move the object.
    */
   private hashOf(plain: Plain): string {
-    if ("table" in plain && plain.table === "workspaces") {
-      const { lastActivity, ...rest } = plain.row as Workspace;
-      void lastActivity;
-      return sha256(JSON.stringify({ ...plain, row: rest }));
-    }
-    if ("table" in plain && plain.table === "kv") {
-      const { updatedAt, ...rest } = plain.row as KvRow;
-      void updatedAt;
-      return sha256(JSON.stringify({ ...plain, row: rest }));
-    }
-    return sha256(JSON.stringify(plain));
+    return hashPlain(plain);
   }
 
   private build(keys: BackupKeys, kind: BackupKind, id: string, plain: Plain): Built | undefined {
@@ -359,12 +355,7 @@ export class BackupSync {
   /** Every object the store and the editable layer hold now. */
   private all(): { kind: BackupKind; id: string; plain: Plain }[] {
     const out: { kind: BackupKind; id: string; plain: Plain }[] = [];
-    const t = this.deps.store.replicaSnapshot([...BACKUP_EXCLUDED_KV_NS]);
-    for (const row of t.threads as Thread[]) out.push({ kind: "chat", id: `thread:${row.id}`, plain: { id: `thread:${row.id}`, table: "threads", row } });
-    for (const row of t.messages as Message[]) out.push({ kind: "chat", id: `message:${row.id}`, plain: { id: `message:${row.id}`, table: "messages", row } });
-    for (const row of t.tasks as Task[]) out.push({ kind: "tasks", id: `task:${row.id}`, plain: { id: `task:${row.id}`, table: "tasks", row } });
-    for (const row of t.workspaces as Workspace[]) out.push({ kind: "workspaces", id: `workspace:${row.id}`, plain: { id: `workspace:${row.id}`, table: "workspaces", row } });
-    for (const row of t.kv as KvRow[]) out.push({ kind: "state", id: `kv:${row.ns}/${row.key}`, plain: { id: `kv:${row.ns}/${row.key}`, table: "kv", row } });
+    out.push(...tableObjects(this.deps.store.replicaSnapshot([...BACKUP_EXCLUDED_KV_NS])));
     for (const f of editableFiles(this.deps.paths)) {
       const kind = fileKind(f.path);
       if (kind) out.push({ kind, id: f.path, plain: f });
@@ -536,30 +527,65 @@ export class BackupSync {
       onServer.set(`${e.kind}/${e.key}`, { version: e.version, size: e.size });
       this.remoteVersions.set(`${e.kind}/${e.key}`, e.version);
     }
-    const rows = new Map(store.list().map((r) => [`${r.kind}/${r.key}`, r]));
+    // What is written from here on is sent as it is written, and never taken for gone.
+    const writtenSince = (this.writtenSince = new Set<string>());
+    let read: ObjectsRead;
+    try {
+      // the tables' objects, named and hashed, and the ledger: one read on the background worker
+      read = await (this.deps.background ?? new InlineBackground(this.deps.store.db)).call<ObjectsRead>(
+        "backup.objects",
+        { mac: new Uint8Array(keys.mac), excludeKvNs: [...BACKUP_EXCLUDED_KV_NS], privateNodes: [...this.deps.store.privateNodes()] },
+        { class: "read" },
+      );
+    } catch (e) {
+      this.writtenSince = undefined;
+      throw e;
+    }
+    let sliceAt = performance.now();
+    const breathe = async () => {
+      if (performance.now() - sliceAt < 8) return;
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      sliceAt = performance.now();
+    };
+    const rows = new Map<string, BackupSyncRow>();
+    for (const line of read.rows ? read.rows.split("\n") : []) {
+      const r = rowOf(line);
+      rows.set(`${r.kind}/${r.key}`, r);
+    }
+    const objects = read.objects ? read.objects.split("\n").map(objectOf) : [];
+    for (const f of editableFiles(this.deps.paths)) {
+      const kind = fileKind(f.path);
+      if (kind) objects.push({ kind, id: f.path, key: objectKey(keys.mac, kind, f.path), hash: this.hashOf(f) });
+    }
     const present = new Set<string>();
     let sent = 0;
-    for (const { kind, id, plain } of this.all()) {
-      const key = objectKey(keys.mac, kind, id);
+    for (let i = 0; i < objects.length; i++) {
+      if (i % RECONCILE_SLICE === 0) await breathe();
+      const { kind, id, key, hash } = objects[i]!;
       const k = `${kind}/${key}`;
       present.add(k);
       const have = rows.get(k);
       const server = onServer.get(k);
-      const hash = this.hashOf(plain);
       if (have && have.synced && have.hash === hash && server) continue;
       if (have && have.synced && server === undefined) store.put({ ...have, synced: false });
       this.enqueue(kind, id);
       sent++;
     }
-    // ledger rows for what is gone here: the server's copy goes with them
+    // ledger rows for what is gone here: the server's copy goes with them, unless it was written since the read
     for (const [k, row] of rows) {
-      if (present.has(k)) continue;
+      if (present.has(k) || writtenSince.has(`${row.kind}\0${row.id}`)) continue;
       if (onServer.has(k)) this.enqueueDelete(row.kind as BackupKind, row.key);
       else store.delete(row.kind, row.key);
     }
-    // the server's extras: objects that no ledger row and no row here explain
+    // the server's extras: objects that no ledger row, no row here and nothing written since explain
+    const since = new Set([...writtenSince].map((w) => {
+      const z = w.indexOf("\0");
+      const kind = w.slice(0, z) as BackupKind;
+      return `${kind}/${objectKey(keys.mac, kind, w.slice(z + 1))}`;
+    }));
+    this.writtenSince = undefined;
     for (const k of onServer.keys()) {
-      if (present.has(k) || rows.has(k)) continue;
+      if (present.has(k) || rows.has(k) || since.has(k)) continue;
       const slash = k.indexOf("/");
       this.enqueueDelete(k.slice(0, slash) as BackupKind, k.slice(slash + 1));
     }

@@ -1532,6 +1532,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
   // The cloud backup's sender: hears the store and the editable layer, sends on the primary, restores onto a fresh install.
   backup = new BackupSync({
     store,
+    background,
     paths: p,
     log: log.child("backup"),
     nodeId: identity.id,
