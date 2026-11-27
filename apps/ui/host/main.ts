@@ -133,6 +133,8 @@ const viewhost = new ViewHost({
   // The app has a microphone and no bar of its own: the view draws the talk button.
   talk: true,
   voice,
+  // ...and its presses are the host's to make: capture starts at the press, not when the node says listening
+  ptt: (params) => voice.host.viewPtt(params),
   stage: async (manifest) => {
     const content = await conn.request<ViewContent>("view.get", { id: manifest.id });
     // An older shell serves no document frame, and names none.

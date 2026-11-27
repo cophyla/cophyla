@@ -34,7 +34,8 @@ export interface UiActions {
   /** The bar's menu button: the view shows or hides its rail. */
   menu(): void;
   listen(on: boolean): void;
-  ptt(down: boolean): void;
+  /** The talk button pressed or let go, and when (epoch ms, the pointer's time). */
+  ptt(down: boolean, at?: number): void;
   mute(on: boolean): void;
   forget(): Promise<void>;
 }
@@ -347,18 +348,24 @@ export function bind(ui: UiElements, actions: UiActions): void {
     void actions.forget();
   });
 
+  // Each edge says when the pointer moved, not when the page got to it: a busy page still records from the press.
   const down = (ev: Event) => {
     ev.preventDefault();
     if (ui.ptt.disabled || ui.ptt.dataset["down"] === "1") return;
     ui.ptt.dataset["down"] = "1";
-    actions.ptt(true);
+    actions.ptt(true, eventTime(ev));
   };
   const up = (ev: Event) => {
     ev.preventDefault();
     if (ui.ptt.dataset["down"] !== "1") return;
     delete ui.ptt.dataset["down"];
-    actions.ptt(false);
+    actions.ptt(false, eventTime(ev));
   };
   ui.ptt.addEventListener("pointerdown", down);
   for (const name of ["pointerup", "pointercancel", "pointerleave"]) ui.ptt.addEventListener(name, up);
+}
+
+/** When an event happened, epoch ms: its time stamp on the page's own clock. */
+function eventTime(ev: Event): number {
+  return Math.round(performance.timeOrigin + ev.timeStamp);
 }

@@ -2193,9 +2193,11 @@ function pageBack(): void {
  * host streams its microphone while the node listens to it, and what was said comes back as
  * words typed into the field beside the button pressed, for the user to send. Tapped rather
  * than held, it listens on until Stop, Stop and send or Cancel (`release`). The words go to the
- * session, group or chat whose field it was, wherever the user is by then (`Home`).
+ * session, group or chat whose field it was, wherever the user is by then (`Home`). Each edge
+ * says when the user made it (`at`, the event's own time), so a host that captures from the
+ * press records from there however late the page got to it.
  */
-function talk(held: boolean, button?: HTMLButtonElement): void {
+function talk(held: boolean, button?: HTMLButtonElement, at?: number): void {
   if ((ui.talking === true) === held) return;
   ui.talking = held;
   if (held) {
@@ -2209,7 +2211,8 @@ function talk(held: boolean, button?: HTMLButtonElement): void {
     transcribing();
   }
   draw();
-  rpc.request("voice.ptt", held ? { active: true, dictate: true } : { active: false }).catch((e: unknown) => {
+  const when = at !== undefined ? { at } : {};
+  rpc.request("voice.ptt", held ? { active: true, dictate: true, ...when } : { active: false, ...when }).catch((e: unknown) => {
     if (held) ui.talking = false;
     else ui.talkBusy = undefined;
     fail("talk", e);
@@ -2229,12 +2232,12 @@ let pressAt = 0;
  * it goes on, and Cancel, Stop and Stop and send take the talk and send buttons' place beside its
  * field. Its second release (the pointer's capture let go after its `pointerup`) changes nothing.
  */
-function release(): void {
+function release(at?: number): void {
   if (!ui.talking || ui.talkLatched !== undefined) return;
   const home = pressHome;
   const latches = home !== undefined && ["composer-text", "send-text", "group-text"].some((c) => home.field.classList.contains(c));
   if (!tapped(Date.now() - pressAt) || !latches) {
-    talk(false);
+    talk(false, undefined, at);
     return;
   }
   // The key that tapped it leaves the focus on a button that goes: Stop takes it.
@@ -5360,22 +5363,26 @@ document.addEventListener("pointerdown", (ev) => {
   if (!button || button.disabled || ev.button !== 0) return;
   ev.preventDefault();
   button.setPointerCapture(ev.pointerId);
-  talk(true, button);
+  talk(true, button, eventTime(ev));
 });
 for (const type of ["pointerup", "pointercancel", "lostpointercapture"] as const) {
   document.addEventListener(type, (ev) => {
-    if (ui.talking && (ev.target as Element | null)?.closest(".talk")) release();
+    if (ui.talking && (ev.target as Element | null)?.closest(".talk")) release(eventTime(ev));
   });
 }
 document.addEventListener("keydown", (ev) => {
   if ((ev.key === " " || ev.key === "Enter") && (ev.target as Element | null)?.classList.contains("talk")) {
     ev.preventDefault();
-    if (!ev.repeat && !(ev.target as HTMLButtonElement).disabled) talk(true, ev.target as HTMLButtonElement);
+    if (!ev.repeat && !(ev.target as HTMLButtonElement).disabled) talk(true, ev.target as HTMLButtonElement, eventTime(ev));
   }
 });
 document.addEventListener("keyup", (ev) => {
-  if ((ev.key === " " || ev.key === "Enter") && ui.talking && (ev.target as Element | null)?.classList.contains("talk")) release();
+  if ((ev.key === " " || ev.key === "Enter") && ui.talking && (ev.target as Element | null)?.classList.contains("talk")) release(eventTime(ev));
 });
+/** When an event happened, epoch ms: its time stamp on the frame's own clock. */
+function eventTime(ev: Event): number {
+  return Math.round(performance.timeOrigin + ev.timeStamp);
+}
 // A window that loses the focus mid-hold never sees the key come up; a tapped press is not held, and listens on.
 window.addEventListener("blur", () => {
   if (ui.talking && ui.talkLatched === undefined) talk(false);

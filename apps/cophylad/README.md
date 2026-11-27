@@ -744,7 +744,15 @@ controller that streamed before a stage came up is heard once it does. An uttera
 wake word began — on the phone or here — is abandoned without transcribing when the VAD
 hears no speech in its first five seconds of audio, or when four seconds pass without a
 frame; the recogniser is dropped, not drained, so a hosted one is never sent silence, and a
-held button is never abandoned. `voice.ptt` with `cancel` (Escape in the default view) takes
+held button is never abandoned. The button's edges keep their place among the frames: a
+release that comes while frames are still queued waits behind them, and the button holds until
+it is reached, so a press handled late arrives with its release and still loses nothing; a
+press behind a queued release waits too. A release that names the last frame the client sent
+(`upTo`) waits for that frame, or 1.5 s when it never comes, and hears nothing past it; its
+answer comes once it was reached, after the states it moved. While the button holds an
+utterance, or one is heard, no frame is shed short of a minute's backlog. The `utterance` lines
+say what a release waited for (`backfilled` frames over `spreadMs`) and the hold the client
+measured (`clientHeldMs`, from the two edges' `at`). `voice.ptt` with `cancel` (Escape in the default view) takes
 back the caller's own utterance while it is heard or transcribed, however it began: the
 recogniser is dropped, a transcript already on its way is thrown away, nothing reaches the
 chat, and the button is let go, so its own release later ends nothing. It rides on

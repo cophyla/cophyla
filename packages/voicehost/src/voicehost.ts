@@ -32,6 +32,17 @@
 // up until the button is let go and pressed again. One the node stopped on its own (the
 // `stopped` of its `transcribing`: the limit, the allowance) ends on the louder `ended`
 // sound rather than the stop's, since the user, still speaking, would not know.
+//
+// A press keeps the user's own timeline, not the moment the page got round to it. Each frame
+// carries when it was captured (clock.ts), and the last ten seconds of them are kept (the
+// ring), so a press that names when it happened (`at`: the talk key's, the view's pointer's)
+// sends the frames captured since then first, those not already sent, and the live ones after.
+// A release stops at its own `at`: the frames captured before it still go up as they come,
+// the encoder sends what it holds, and the release names the last frame of the press (`upTo`)
+// for the node to wait for. The button's edges go out in the order they came, each after the
+// one before. One holder has the press at a time, the host's own button or key (`host`) or a
+// view's button through the bridge (`view`, `viewPtt`): a press while it is held is nobody's,
+// and only the holder lets go.
 
 import type { AudioCodec, VoiceState, WakeHeadMode, WakewordMode } from "@cophyla/protocol";
 import { Audio } from "./audio.ts";
@@ -44,7 +55,8 @@ import { encodeChunk } from "./pcm.ts";
 import { Uplink } from "./uplink.ts";
 import { headsOf, WakeDetector } from "./wake/detector.ts";
 import type { FileCache } from "./wake/detector.ts";
-import { FrameRing } from "./wake/ring.ts";
+import { FRAME_MS, FrameRing } from "./wake/ring.ts";
+import type { NumberedFrame } from "./wake/ring.ts";
 
 /**
  * Frames from before the word fired that go up after `voice.wake`, 160 ms: a word fires a
@@ -55,6 +67,13 @@ import { FrameRing } from "./wake/ring.ts";
 export const LEAD_FRAMES = 4;
 /** How long a burst of device changes (a headset shows its microphone and its speaker apart) is gathered before the host looks. */
 export const DEVICES_SETTLE_MS = 400;
+/** How far back a press may begin: what the ring keeps. */
+export const PRESS_BACK_MS = 10_000;
+/** How long a release waits for the frames captured before it to arrive, and how long at most while the capture says they exist. */
+export const RELEASE_WAIT_MS = 300;
+export const RELEASE_WAIT_MAX_MS = 3000;
+/** How many frames up are remembered with the microphone frame each completes, for a release's `upTo`. */
+const UP_LOG = 300;
 import { initialWake, PENDING_MS, reduceWake } from "./wake/state.ts";
 import type { WakeBook, WakeEvent, WakeMode } from "./wake/state.ts";
 
@@ -140,6 +159,8 @@ export interface VoiceHostOptions {
   mic?: MicChoice;
   /** The speaker the user picked; the system's default when absent. */
   speaker?: MicChoice;
+  /** The wall clock, epoch ms; `Date.now` unless given. */
+  now?: () => number;
   /** Something the host shows moved. */
   onChange?: () => void;
   /** Recording an utterance started or stopped; the cue for it is already playing. */
@@ -149,6 +170,41 @@ export interface VoiceHostOptions {
   /** The codecs this web view speaks moved (WebCodecs answered, or the encoder failed); a link that says them in its hello wants them. */
   onCodecs?: (codecs: AudioCodec[]) => void;
   log?: (message: string) => void;
+}
+
+/** A press or a release: when the user did it, epoch ms (now when absent), and who holds the press (`host` when absent). */
+export interface PttOptions {
+  dictate?: boolean;
+  at?: number;
+  by?: string;
+}
+
+/** A view's `voice.ptt`, as the bridge hands it on. */
+export interface ViewPtt {
+  active: boolean;
+  cancel?: boolean;
+  dictate?: boolean;
+  at?: number;
+}
+
+/** A press or a release waiting its turn to go out; dropped, its answer settles with nothing sent. */
+interface Edge {
+  run(sent: () => void): void;
+  drop(): void;
+}
+
+/** A release letting go of the press: frames captured before `at` still go up as the press's, until the first after it or the wait's end. */
+interface Letting {
+  at: number;
+  /** The press's frames were going up, so the rest of them do. */
+  streams: boolean;
+  since: number;
+  timer?: ReturnType<typeof setTimeout>;
+  /** The encoder is sending what it holds: the release goes out next. */
+  ending: boolean;
+  /** Sends the release; `drop` answers it with nothing sent. */
+  finish(): void;
+  drop(): void;
 }
 
 /** What the host shows about voice: its controls and the words beside them. */
@@ -195,7 +251,16 @@ export class VoiceHost {
   private book: WakeBook = initialWake();
   private voice?: VoiceState;
   private talking = false;
+  /** Who holds the press: the host's own button or key, or a view's through the bridge. */
+  private holder?: string;
   private released = false;
+  /** The button's edges not yet out, in order, and whether one is going out now. */
+  private edges: Edge[] = [];
+  private edgeBusy = false;
+  private edgeRunning = false;
+  private letting?: Letting;
+  /** The frames that went up lately, each by its number on the wire, with the microphone frame whose audio it completes. */
+  private upLog: { seq: number; frame: number }[] = [];
   /** The state being handled says the node stopped the recording on its own. */
   private endedByNode = false;
   private talkRefused = false;
@@ -236,15 +301,7 @@ export class VoiceHost {
       send: (params) => void this.opts.link.send({ jsonrpc: "2.0", method: "voice.audio", params }).catch(() => {}),
     });
     this.audio = new Audio({
-      // Every frame is numbered and kept a moment, so the ones captured while the worker scored
-      // the word can follow `voice.wake` up; each goes to the node, to the wake word, or both.
-      onFrame: (pcm) => {
-        const n = ++this.seq;
-        this.ring.push(n, pcm);
-        if (this.streaming) this.sendFrame(pcm);
-        if (this.detecting) this.detector?.feed(n, pcm);
-        if (this.recording) this.opts.onLevels?.(levelsOf(pcm));
-      },
+      onFrame: (pcm, at) => this.onMic(pcm, at),
       onPlayed: (reply, stats) => {
         this.played.count++;
         this.played.last = { reply, ...stats };
@@ -363,6 +420,21 @@ export class VoiceHost {
     return this.audio.open();
   }
 
+  /**
+   * A frame from the microphone, and when it was captured. Every frame is numbered and kept a
+   * while, so the ones captured while the worker scored the word can follow `voice.wake` up, and
+   * those captured since a press the page took late can lead it; each goes to the node, to the
+   * wake word, or both. While a release lets go, it decides.
+   */
+  private onMic(pcm: Int16Array, at: number): void {
+    const n = ++this.seq;
+    const frame = this.ring.push(n, pcm, at);
+    if (this.letting) this.lettingFrame(frame);
+    else if (this.streaming) this.sendFrame(frame);
+    if (this.detecting) this.detector?.feed(n, pcm);
+    if (this.recording) this.opts.onLevels?.(levelsOf(pcm));
+  }
+
   // --- the node's frames and the link -------------------------------------------------------------
 
   /**
@@ -407,7 +479,9 @@ export class VoiceHost {
     if (!connected) {
       this.voice = undefined;
       this.audio.flush();
+      this.dropEdges();
       this.talking = false;
+      delete this.holder;
       this.released = false;
       this.talkRefused = false;
       this.dispatch({ type: "disconnected" });
@@ -437,42 +511,237 @@ export class VoiceHost {
   }
 
   /**
-   * The button (or the key) held and let go. Let go, recording stops at once; the node's
-   * `listening` for the press may still be on its way (a quick tap), and is not a new one. The
-   * node says its states for a press before it answers it, so its answer ends that wait. A
-   * press with `dictate` has its words typed where the user writes, on a node that does that;
-   * an older one is asked nothing more, and makes them a message as before.
+   * The button (or the key) held and let go, by whoever holds it (`by`, the host's own when
+   * absent), at `at` when the user did it (now when absent). Let go, recording stops at once;
+   * the node's `listening` for the press may still be on its way (a quick tap), and is not a
+   * new one. The node says its states for a press before it answers it, so its answer ends that
+   * wait. A press with `dictate` has its words typed where the user writes, on a node that does
+   * that; an older one is asked nothing more, and makes them a message as before.
    */
-  ptt(down: boolean, opts: { dictate?: boolean } = {}): void {
-    if (this.talking === down) return;
-    this.talking = down;
-    this.talkRefused = false;
-    this.released = !down && this.opts.link.connected;
-    if (down) this.detector?.reset();
-    this.refresh();
-    if (this.opts.link.connected) {
-      const answered = (): void => {
-        if (down || this.talking || !this.released) return;
-        this.released = false;
-        this.refresh();
-      };
-      const dictate = down && opts.dictate === true && this.dictates;
-      void this.opts.link.request("voice.ptt", { active: down, ...(dictate ? { dictate: true } : {}) }).then(
-        () => {
-          this.settle();
-          answered();
-        },
-        (e: unknown) => {
-          this.refuse(`voice.ptt`, e);
-          answered();
-          // Refused while still held: nothing is recorded, whatever the button says.
-          if (down && this.talking) {
-            this.talkRefused = true;
-            this.refresh();
-          }
-        },
-      );
+  ptt(down: boolean, opts: PttOptions = {}): void {
+    void this.hold(down, opts).catch(() => {});
+  }
+
+  /**
+   * `ptt`, answered: settles with the node's answer to the edge, or at once when it was nobody's
+   * (a press while the button is held, a release by another than its holder).
+   */
+  hold(down: boolean, opts: PttOptions = {}): Promise<void> {
+    const now = this.now();
+    const at = Math.round(Math.min(now, Math.max(now - PRESS_BACK_MS, opts.at ?? now)));
+    const by = opts.by ?? "host";
+    return down ? this.press(by, at, opts.dictate === true) : this.release(by, at);
+  }
+
+  /** A view's `voice.ptt`, which the bridge hands the host: its press, its release, or its cancel, answered as the node answers. */
+  viewPtt(params: ViewPtt): Promise<void> {
+    if (params.cancel === true) return this.cancel();
+    return this.hold(params.active, { by: "view", ...(params.dictate === true ? { dictate: true } : {}), ...(params.at !== undefined ? { at: params.at } : {}) });
+  }
+
+  /**
+   * Takes back what is being said (Escape in a view): the press is let go here with nothing
+   * more sent for it, and the node drops the utterance and lets go of its own.
+   */
+  cancel(): Promise<void> {
+    this.dropEdges();
+    if (this.talking || this.released) {
+      this.talking = false;
+      delete this.holder;
+      this.talkRefused = false;
+      this.released = false;
+      this.refresh();
     }
+    if (!this.opts.link.connected) return Promise.resolve();
+    return this.opts.link.request("voice.ptt", { active: false, cancel: true }).then(() => undefined);
+  }
+
+  private press(by: string, at: number, dictate: boolean): Promise<void> {
+    // One holder at a time: held already, a press is nobody's.
+    if (this.talking) return Promise.resolve();
+    this.talking = true;
+    this.holder = by;
+    this.talkRefused = false;
+    this.released = false;
+    this.detector?.reset();
+    this.refresh();
+    if (!this.opts.link.connected) return Promise.reject(unavailable());
+    // A release still letting go of the last press goes out now, ahead of this one.
+    if (this.letting) this.endLetting(this.letting);
+    return new Promise<void>((resolve, reject) => {
+      this.edge({
+        run: (sent) => {
+          const asks = dictate && this.dictates;
+          this.opts.link.request("voice.ptt", { active: true, ...(asks ? { dictate: true } : {}), at }).then(
+            () => {
+              this.settle();
+              resolve();
+            },
+            (e: unknown) => {
+              this.refuse("voice.ptt", e);
+              // Refused while still held: nothing is recorded, whatever the button says.
+              if (this.talking) {
+                this.talkRefused = true;
+                this.refresh();
+              }
+              reject(e);
+            },
+          );
+          // The frames captured since the press, which the page took late, go up first; the live ones follow.
+          if (this.live()) for (const f of this.ring.since(at)) if (!f.sent) this.sendFrame(f);
+          sent();
+        },
+        drop: () => resolve(),
+      });
+    });
+  }
+
+  private release(by: string, at: number): Promise<void> {
+    if (!this.talking || this.holder !== by) return Promise.resolve();
+    const streams = this.live() && !this.talkRefused;
+    this.talking = false;
+    delete this.holder;
+    this.talkRefused = false;
+    this.released = this.opts.link.connected;
+    this.refresh();
+    if (!this.opts.link.connected) return Promise.resolve();
+    const answered = (): void => {
+      if (this.talking || !this.released) return;
+      this.released = false;
+      this.refresh();
+    };
+    return new Promise<void>((resolve, reject) => {
+      this.edge({
+        run: (sent) => {
+          const l: Letting = {
+            at,
+            streams,
+            since: this.now(),
+            ending: false,
+            drop: () => resolve(),
+            finish: () => {
+              if (this.letting === l) delete this.letting;
+              const upTo = this.upToBefore(at);
+              this.opts.link.request("voice.ptt", { active: false, at, ...(upTo !== undefined ? { upTo } : {}) }).then(
+                () => {
+                  this.settle();
+                  answered();
+                  resolve();
+                },
+                (e: unknown) => {
+                  this.refuse("voice.ptt", e);
+                  answered();
+                  reject(e);
+                },
+              );
+              sent();
+            },
+          };
+          this.letting = l;
+          if (this.awaitsFrames(l)) this.armLetting(l);
+          else this.endLetting(l);
+        },
+        drop: () => resolve(),
+      });
+    });
+  }
+
+  /** The microphone's frames can reach the node: connected, the audio up, the app in front and not covered. */
+  private live(): boolean {
+    return this.opts.link.connected && this.audioReady && !this.away && !this.watching;
+  }
+
+  /** The release waits for frames: the capture runs and the newest frame began before the release. */
+  private awaitsFrames(l: Letting): boolean {
+    const last = this.ring.last;
+    return this.live() && this.audio.capturing && (last === undefined || last.at - FRAME_MS < l.at);
+  }
+
+  /** The wait's end: past it, while the capture is past the release (its frames exist, the page only has not taken them), the wait goes on a while. */
+  private armLetting(l: Letting): void {
+    l.timer = setTimeout(() => {
+      delete l.timer;
+      if (this.letting !== l || l.ending) return;
+      const to = this.audio.capturedTo;
+      if (this.audio.capturing && to !== undefined && to >= l.at && this.now() - l.since < RELEASE_WAIT_MAX_MS) {
+        this.armLetting(l);
+        return;
+      }
+      this.endLetting(l);
+    }, RELEASE_WAIT_MS);
+  }
+
+  /** A frame while a release lets go: one captured before it is the press's; the first after it ends the wait, and waits itself. */
+  private lettingFrame(f: NumberedFrame): void {
+    const l = this.letting!;
+    if (l.ending) return;
+    if (f.at - FRAME_MS < l.at) {
+      if (l.streams) this.sendFrame(f);
+      return;
+    }
+    this.endLetting(l);
+  }
+
+  /** The press's frames are all up: the encoder sends what it holds, then the release goes. */
+  private endLetting(l: Letting): void {
+    if (l.ending) return;
+    l.ending = true;
+    if (l.timer) clearTimeout(l.timer);
+    delete l.timer;
+    const encoder = this.encoder;
+    if (encoder) void encoder.flush().then(l.finish, l.finish);
+    else l.finish();
+  }
+
+  /** The number on the wire of the frame that completes the last audio sent from before `at`: the last of the press. */
+  private upToBefore(at: number): number | undefined {
+    const last = this.ring.lastSentBefore(at);
+    if (last !== undefined) {
+      const hit = this.upLog.find((e) => e.frame >= last.seq);
+      if (hit) return hit.seq;
+    }
+    return this.uplink.lastSent;
+  }
+
+  /** An edge out once those before it are; at once when none waits. */
+  private edge(e: Edge): void {
+    this.edges.push(e);
+    this.nextEdge();
+  }
+
+  private nextEdge(): void {
+    if (this.edgeRunning) return;
+    this.edgeRunning = true;
+    try {
+      while (!this.edgeBusy && this.edges.length > 0) {
+        const e = this.edges.shift()!;
+        this.edgeBusy = true;
+        let done = false;
+        e.run(() => {
+          if (done) return;
+          done = true;
+          this.edgeBusy = false;
+          this.nextEdge();
+        });
+      }
+    } finally {
+      this.edgeRunning = false;
+    }
+  }
+
+  /** The edges not yet out are dropped, and a release letting go with them: nothing more of the press goes up. */
+  private dropEdges(): void {
+    const dropped = this.edges;
+    this.edges = [];
+    const l = this.letting;
+    if (l && !l.ending) {
+      if (l.timer) clearTimeout(l.timer);
+      delete this.letting;
+      // Its edge is out of the way: the next one may go.
+      this.edgeBusy = false;
+      l.drop();
+    }
+    for (const e of dropped) e.drop();
   }
 
   /** Listening for the wake word, on or off. */
@@ -647,9 +916,11 @@ export class VoiceHost {
     await this.micAgain();
   }
 
+  /** The press is let go by whoever held it, at once: the microphone is going off. */
   private letGo(): void {
-    if (this.talking && this.opts.link.connected) void this.opts.link.request("voice.ptt", { active: false }).catch(() => {});
+    if (this.talking) void this.hold(false, this.holder !== undefined ? { by: this.holder } : {}).catch(() => {});
     this.talking = false;
+    delete this.holder;
   }
 
   // --- where frames go -----------------------------------------------------------------------------
@@ -754,7 +1025,7 @@ export class VoiceHost {
         this.dispatch({ type: "refused", ...(codeOf(e) ? { code: codeOf(e)! } : {}) });
       },
     );
-    for (const f of this.ring.after(heardIn - LEAD_FRAMES)) this.sendFrame(f.pcm);
+    for (const f of this.ring.after(heardIn - LEAD_FRAMES)) this.sendFrame(f);
     this.pendingTimer = setTimeout(() => {
       this.pendingTimer = undefined;
       this.dispatch({ type: "tick", at: Date.now() });
@@ -773,18 +1044,19 @@ export class VoiceHost {
     return this.codecList.includes("opus") && this.opts.link.state.hello?.audio?.codecs.includes("opus") === true;
   }
 
-  private sendFrame(pcm: Int16Array): void {
+  private sendFrame(f: NumberedFrame): void {
+    f.sent = true;
     if (this.opusUp()) {
       try {
         this.encoder ??= new MicEncoder(
-          (chunk) => void this.uplink.frame(chunk, "opus"),
+          (chunk, frame) => this.up(chunk, "opus", frame),
           (e) => {
             this.log(`opus encoder: ${message(e)}`);
             this.setCodecs(["pcm"]);
           },
         );
         if (this.encoder.ok) {
-          this.encoder.encode(pcm);
+          this.encoder.encode(f.pcm, f.seq);
           return;
         }
       } catch (e) {
@@ -794,7 +1066,14 @@ export class VoiceHost {
       this.encoder = undefined;
       this.setCodecs(["pcm"]);
     }
-    void this.uplink.frame(encodeChunk(pcm), "pcm");
+    this.up(encodeChunk(f.pcm), "pcm", f.seq);
+  }
+
+  /** A frame onto the wire, remembered with the microphone frame whose audio it completes. */
+  private up(chunk: string, codec: AudioCodec, frame: number | undefined): void {
+    if (!this.uplink.frame(chunk, codec) || frame === undefined || this.uplink.lastSent === undefined) return;
+    this.upLog.push({ seq: this.uplink.lastSent, frame });
+    if (this.upLog.length > UP_LOG) this.upLog.shift();
   }
 
   /** The node refused the button or a word: why, until the next one it takes. */
@@ -814,6 +1093,10 @@ export class VoiceHost {
     this.opts.onChange?.();
   }
 
+  private now(): number {
+    return (this.opts.now ?? Date.now)();
+  }
+
   private log(text: string): void {
     (this.opts.log ?? console.info)(text);
   }
@@ -827,4 +1110,9 @@ function codeOf(e: unknown): string | undefined {
 
 function message(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
+}
+
+/** What a press with no link answers: a protocol error's code and words. */
+function unavailable(): Error {
+  return Object.assign(new Error("not connected to cophylad"), { code: "unavailable" });
 }

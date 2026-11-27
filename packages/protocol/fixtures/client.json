@@ -168,7 +168,7 @@
     "workspace.list": { "params": [{}], "results": [{ "workspaces": [] }] },
     "workspace.put": { "params": [{ "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "path": "C:\\D\\other", "name": "other" }], "results": [{ "id": "ws_01ARZ3NDEKTSV4RRFFQ69G5FB1" }] },
     "event.list": { "params": [{}], "results": [{ "events": [] }] },
-    "voice.ptt": { "params": [{ "active": true }, { "active": false, "cancel": true }, { "active": true, "dictate": true }], "results": [{}] },
+    "voice.ptt": { "params": [{ "active": true }, { "active": false, "cancel": true }, { "active": true, "dictate": true }, { "active": true, "dictate": true, "at": 1764230400000 }, { "active": false, "at": 1764230402480, "upTo": 731 }, { "active": false, "at": 1764230402480, "upTo": 0 }], "results": [{}] },
     "voice.wakeword": {
       "params": [{ "heads": ["cophyla_v0.1.onnx"] }, { "heads": [] }],
       "results": [

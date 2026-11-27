@@ -1,8 +1,18 @@
 // One conversation with one controller: the state machine that turns a stream of microphone
 // frames into an utterance and speech back. Audio arrives every 40 ms and each stage of the
 // pipeline is slower than that, so frames go through a serial pump with a bounded backlog:
-// under load the oldest frame is dropped rather than the newest, because the newest is what
-// the user is saying now.
+// under load, with nothing held, the oldest frame is dropped rather than the newest, because
+// the newest is what the user is saying now. While the button holds an utterance, or one is
+// heard, nothing is dropped short of a hard cap: every frame of it is the user's words.
+//
+// The button's edges keep their place among the frames. A release that comes while frames are
+// still queued waits behind them, and the press stays held until it is reached, so neither the
+// end-of-speech detector nor the stall ends the utterance meanwhile; a press behind a queued
+// release waits too. A release with nothing queued ends the utterance at once. One that names
+// the last frame the client sent for the press (`upTo`, the frames' own numbers) ends once that
+// frame is heard, or after `UPTO_GRACE_MS` when it never comes (shed, or lost); a frame numbered
+// past it is after the press. Its answer goes back once it was reached, after the states it
+// moved. A cancel is never queued: it drops what waits with the utterance it takes back.
 //
 // Idle, the wake word runs over everything and nothing else does — on the node for a
 // controller that streams while it listens, on the phone for one that detects the word
@@ -54,6 +64,10 @@ import { FRAME, IN_RATE, OUT_RATE } from "./engines.ts";
 export const OUT_FRAME = 4800;
 /** Audio held before the oldest frames are dropped. */
 export const BACKLOG_MS = 2000;
+/** Audio held for an utterance the button holds or that is heard before its oldest frames go: a pump this far behind is not catching up. */
+export const HELD_BACKLOG_MS = 60_000;
+/** How long a release that names its last frame (`upTo`) waits for it before the utterance ends without it. */
+export const UPTO_GRACE_MS = 1500;
 /**
  * Added to the playback estimate, for the hop and the controller's own scheduling: a phone on
  * mobile data through the server relay hears a frame several hundred ms after it left.
@@ -118,6 +132,42 @@ export interface PlayedStats {
 /** The moments of one turn, for its `voice turn` line. */
 type Stamp = "speechEnd" | "sttFinal" | "reply" | "speak" | "firstChunk" | "synthDone" | "played";
 
+/** A frame from the controller, with its number when the controller numbers them. */
+interface QueuedFrame {
+  kind: "frame";
+  pcm: Int16Array;
+  seq?: number;
+}
+
+/** A press waiting its turn behind a release; `done` answers it. */
+interface QueuedPress {
+  kind: "press";
+  dictate: boolean;
+  at?: number;
+  done: () => void;
+}
+
+/** A release, and what it found when it came: what its log line says of the wait it caused. */
+interface QueuedRelease {
+  kind: "release";
+  at?: number;
+  upTo?: number;
+  arrived: number;
+  /** The utterance, and the frames its recogniser had heard, when the release came. */
+  utterance: number;
+  heard: number;
+  done: () => void;
+}
+
+type Queued = QueuedFrame | QueuedPress | QueuedRelease;
+
+/** What an utterance a release ended says of it: frames it heard after the release came, how long that took, and the hold the client measured. */
+interface Released {
+  backfilled: number;
+  spreadMs: number;
+  clientHeldMs?: number;
+}
+
 /** A line waiting to be spoken, and what settles its `speak`. */
 interface Line {
   text: string;
@@ -143,10 +193,11 @@ export interface ConversationDeps {
   /** The controller answers each reply's end with `voice.played`, so `speaking` waits for it. */
   acksPlayed?: boolean;
   thinkingTimeoutMs: number;
-  /** For the tests: `NO_SPEECH_MS`, `LISTEN_STALL_MS` and `PLAYED_FALLBACK_MS` unless given. */
+  /** For the tests: `NO_SPEECH_MS`, `LISTEN_STALL_MS`, `PLAYED_FALLBACK_MS` and `UPTO_GRACE_MS` unless given. */
   noSpeechMs?: number;
   stallMs?: number;
   playedFallbackMs?: number;
+  upToGraceMs?: number;
   on: ConversationHandlers;
   now?: () => number;
   log?: Logger;
@@ -172,6 +223,8 @@ export class Conversation {
   /** The samples the recogniser hears at most, and those it heard of the utterance so far; whether it was told of speech. */
   private maxSamples = Infinity;
   private fed = 0;
+  /** Frames the recogniser heard of the utterance, for what a release waited for. */
+  private framesFed = 0;
   private toldHeard = false;
   /** Samples the utterance has seen, for the no-speech abandon. */
   private samples = 0;
@@ -184,9 +237,22 @@ export class Conversation {
   /** Frames still to come that were captured before the phone's word fired: the recogniser's alone. */
   private leadLeft = 0;
   private stallTimer?: ReturnType<typeof setTimeout>;
-  private queue: Int16Array[] = [];
+  /** Frames, and the button's edges that wait behind them, in the order they came; how many of each are in it. */
+  private queue: Queued[] = [];
+  private framesQueued = 0;
+  private controlsQueued = 0;
   private pumping = false;
   private pttHeld = false;
+  /** When the client says the press began (`at`), for the hold it measured. */
+  private pressAt?: number;
+  /** The number of the last frame the pump took, for a release's `upTo`. */
+  private lastSeq?: number;
+  /** A release reached, waiting for the frame it names; the grace ends the wait. */
+  private closing?: QueuedRelease & { upTo: number; timer: ReturnType<typeof setTimeout> };
+  /** What the release that ends the utterance found, for its log line. */
+  private released?: Released;
+  /** A held utterance's frame was dropped at the hard cap: said once per utterance. */
+  private shedHeld = false;
   /** Utterances the user took back, so a transcript that lands after one was is dropped. */
   private cancels = 0;
   private disposed = false;
@@ -265,13 +331,50 @@ export class Conversation {
     this.noteUplink(seq);
     // A frame arrived: the phone is still sending the utterance the wake word began.
     if (this.abandonable()) this.armStall();
-    this.queue.push(pcm);
-    const max = Math.ceil((BACKLOG_MS / 1000) * (IN_RATE / FRAME));
-    while (this.queue.length > max) {
-      this.queue.shift();
-      this.deps.log?.debug("voice backlog: a frame dropped", { client: this.client });
-    }
+    this.queue.push(seq !== undefined ? { kind: "frame", pcm, seq } : { kind: "frame", pcm });
+    this.framesQueued++;
+    this.shed();
     void this.pump();
+  }
+
+  /**
+   * Drops the oldest frames past what may wait: `BACKLOG_MS` with nothing held, and with an
+   * utterance held or heard, or the button's edges waiting, only past `HELD_BACKLOG_MS`.
+   */
+  private shed(): void {
+    const held = this.pttHeld || this.controlsQueued > 0 || this.closing !== undefined || this.state === "listening";
+    const max = Math.ceil(((held ? HELD_BACKLOG_MS : BACKLOG_MS) / 1000) * (IN_RATE / FRAME));
+    while (this.framesQueued > max) {
+      const i = this.queue.findIndex((q) => q.kind === "frame");
+      if (i < 0) break;
+      this.queue.splice(i, 1);
+      this.framesQueued--;
+      if (!held) this.deps.log?.debug("voice backlog: a frame dropped", { client: this.client });
+      else if (!this.shedHeld) {
+        this.shedHeld = true;
+        this.deps.log?.warn("voice backlog: a held utterance lost its oldest frames", { client: this.client, seconds: HELD_BACKLOG_MS / 1000 });
+      }
+    }
+  }
+
+  /** A press or a release behind what is queued: the pump reaches it in its turn. */
+  private enqueue(control: QueuedPress | QueuedRelease): void {
+    this.queue.push(control);
+    this.controlsQueued++;
+    void this.pump();
+  }
+
+  /** Everything queued is dropped: frames unheard, and the button's edges answered unapplied. */
+  private dropQueue(): void {
+    const queued = this.queue;
+    this.queue = [];
+    this.framesQueued = 0;
+    this.controlsQueued = 0;
+    const closing = this.closing;
+    this.closing = undefined;
+    if (closing) clearTimeout(closing.timer);
+    for (const q of queued) if (q.kind !== "frame") q.done();
+    closing?.done();
   }
 
   /** Frames lost on the way (a gap in `seq`) or overtaken (one behind it), and the longest wait between two. */
@@ -292,15 +395,38 @@ export class Conversation {
     this.pumping = true;
     try {
       for (;;) {
-        const frame = this.queue.shift();
-        if (!frame || this.disposed) break;
-        await this.frame(frame);
+        const item = this.queue.shift();
+        if (!item || this.disposed) break;
+        if (item.kind === "press") {
+          this.controlsQueued--;
+          this.close();
+          this.press(item);
+          continue;
+        }
+        if (item.kind === "release") {
+          this.controlsQueued--;
+          this.release(item);
+          continue;
+        }
+        this.framesQueued--;
+        try {
+          await this.take(item);
+        } catch (e) {
+          // One frame failed; those behind it, and the edges waiting on them, still go.
+          this.deps.log?.warn("voice frame failed", { client: this.client, error: e instanceof Error ? e.message : String(e) });
+        }
       }
-    } catch (e) {
-      this.deps.log?.warn("voice frame failed", { client: this.client, error: e instanceof Error ? e.message : String(e) });
     } finally {
       this.pumping = false;
     }
+  }
+
+  /** A frame in its turn. One past the release's last frame ends the press first; the last frame itself ends it once heard. */
+  private async take(f: QueuedFrame): Promise<void> {
+    if (this.closing && f.seq !== undefined && f.seq > this.closing.upTo) this.close();
+    await this.frame(f.pcm);
+    if (f.seq !== undefined) this.lastSeq = f.seq;
+    if (this.closing && f.seq !== undefined && f.seq >= this.closing.upTo) this.close();
   }
 
   private async frame(pcm: Int16Array): Promise<void> {
@@ -353,6 +479,7 @@ export class Conversation {
     if (this.state !== "listening") return false;
     this.stream?.accept(pcm);
     this.fed += pcm.length;
+    this.framesFed++;
     if (this.fed < this.maxSamples) return true;
     this.deps.log?.info("utterance reached its limit", { client: this.client, seconds: Math.round(this.fed / IN_RATE) });
     void this.finish("limit");
@@ -371,19 +498,88 @@ export class Conversation {
     return true;
   }
 
-  /** The button, pressed and released; a press with `dictate` has its words typed by the client, not sent. */
-  ptt(active: boolean, opts: { dictate?: boolean } = {}): void {
-    if (this.disposed) return;
-    this.pttHeld = active;
-    if (active) {
-      this.pressDictates = opts.dictate === true;
-      // Held, an utterance the wake word began is the button's to end, and to dictate.
-      this.clearStall();
-      if (this.state !== "listening") this.begin("button");
-      else this.dictating = this.pressDictates;
+  /**
+   * The button, pressed and released; a press with `dictate` has its words typed by the client,
+   * not sent. `at` is when the client says the user did it, `upTo` on a release the number of
+   * the last frame it sent for the press. Settles once the edge was applied, after the states
+   * it moved: at once, or when the pump reached it.
+   */
+  ptt(active: boolean, opts: { dictate?: boolean; at?: number; upTo?: number } = {}): Promise<void> {
+    if (this.disposed) return Promise.resolve();
+    return new Promise<void>((done) => {
+      if (active) {
+        const press: QueuedPress = { kind: "press", dictate: opts.dictate === true, ...(opts.at !== undefined ? { at: opts.at } : {}), done };
+        if (this.controlsQueued > 0) {
+          this.enqueue(press);
+          return;
+        }
+        // A release still waiting on its last frame is over: the client has moved on to the next press.
+        this.close();
+        this.press(press);
+        return;
+      }
+      const release: QueuedRelease = {
+        kind: "release",
+        ...(opts.at !== undefined ? { at: opts.at } : {}),
+        ...(opts.upTo !== undefined ? { upTo: opts.upTo } : {}),
+        arrived: this.now(),
+        utterance: this.utterances,
+        heard: this.framesFed,
+        done,
+      };
+      if (this.queue.length > 0 || this.pumping) {
+        this.enqueue(release);
+        return;
+      }
+      this.release(release);
+    });
+  }
+
+  /** A press in its turn. Held, an utterance the wake word began is the button's to end, and to dictate. */
+  private press(p: QueuedPress): void {
+    this.pttHeld = true;
+    this.pressDictates = p.dictate;
+    this.pressAt = p.at;
+    this.clearStall();
+    if (this.state !== "listening") this.begin("button");
+    else this.dictating = this.pressDictates;
+    p.done();
+  }
+
+  /**
+   * A release in its turn: the utterance ends now, or, when it names a frame not yet heard,
+   * once that frame is (`close`). A release that overtakes one still waiting ends that one too.
+   */
+  private release(r: QueuedRelease): void {
+    this.close();
+    if (r.upTo !== undefined && this.pttHeld && this.state === "listening" && !(this.lastSeq !== undefined && this.lastSeq >= r.upTo)) {
+      const timer = setTimeout(() => this.close(), this.deps.upToGraceMs ?? UPTO_GRACE_MS);
+      timer.unref?.();
+      this.closing = { ...r, upTo: r.upTo, timer };
       return;
     }
-    if (this.state === "listening") void this.finish("button");
+    this.letGo(r);
+  }
+
+  /** The release waiting for its last frame stops waiting: heard, overtaken, or out of grace. */
+  private close(): void {
+    const closing = this.closing;
+    if (!closing) return;
+    this.closing = undefined;
+    clearTimeout(closing.timer);
+    this.letGo(closing);
+  }
+
+  /** The press is over: an utterance still heard ends, with what the release waited for. */
+  private letGo(r: QueuedRelease): void {
+    this.pttHeld = false;
+    if (this.state === "listening") {
+      const backfilled = r.utterance === this.utterances ? this.framesFed - r.heard : this.framesFed;
+      const clientHeldMs = r.at !== undefined && this.pressAt !== undefined && r.at >= this.pressAt ? Math.round(r.at - this.pressAt) : undefined;
+      this.released = { backfilled, spreadMs: Math.round(this.now() - r.arrived), ...(clientHeldMs !== undefined ? { clientHeldMs } : {}) };
+      void this.finish("button");
+    }
+    r.done();
   }
 
   private begin(why: "wake" | "button"): void {
@@ -403,6 +599,8 @@ export class Conversation {
     this.stream = undefined;
     this.began = why;
     this.dictating = why === "button" && this.pressDictates;
+    if (why === "wake") this.pressAt = undefined;
+    this.shedHeld = false;
     this.samples = 0;
     this.heardFrames = 0;
     this.peak = 0;
@@ -410,6 +608,7 @@ export class Conversation {
     this.leadLeft = 0;
     const utterance = ++this.utterances;
     this.fed = 0;
+    this.framesFed = 0;
     this.toldHeard = false;
     const stt = this.deps.stt?.();
     const limit = stt ? Math.min(stt.maxSeconds || Infinity, this.deps.maxSeconds?.() || Infinity) : Infinity;
@@ -478,12 +677,16 @@ export class Conversation {
    * The user took the utterance back (Escape in the chat), however it began: heard or being
    * transcribed, it ends with nothing sent. The recogniser is dropped, and a transcript already
    * on its way is thrown away when it lands. The button is let go with it, so its own release
-   * later ends nothing. False when no utterance was in progress.
+   * later ends nothing. What waits in the queue goes with it unheard: the frames, and a release
+   * or press waiting their turn, answered as they are dropped. False when no utterance was in
+   * progress and nothing waited.
    */
   cancel(): boolean {
     if (this.disposed) return false;
+    const waiting = this.controlsQueued > 0 || this.closing !== undefined;
+    if (waiting || this.state === "listening" || this.state === "transcribing") this.dropQueue();
     this.pttHeld = false;
-    if (this.state !== "listening" && this.state !== "transcribing") return false;
+    if (this.state !== "listening" && this.state !== "transcribing") return waiting;
     const was = this.state;
     this.cancels++;
     this.dropLines();
@@ -515,6 +718,10 @@ export class Conversation {
     const began = this.began;
     const dictated = this.dictating;
     const heldMs = this.now() - this.beganAt;
+    // A release ended it: what it waited for, and the hold the client measured, go in its line.
+    const released = why === "button" ? this.released : undefined;
+    this.released = undefined;
+    const pressed: Record<string, number> = released ? { backfilled: released.backfilled, spreadMs: released.spreadMs, ...(released.clientHeldMs !== undefined ? { clientHeldMs: released.clientHeldMs } : {}) } : {};
     this.clearStall();
     this.began = undefined;
     this.dictating = false;
@@ -544,14 +751,15 @@ export class Conversation {
     if (!text) {
       // A tap, a cough, a false accept: nothing was said, so nothing wakes the brain. One the
       // button held says why, so a dead microphone is not mistaken for a deaf node.
-      const unheard = this.unheard(heard, heldMs, stream?.how?.failed);
-      this.deps.log?.info("utterance was empty", { client: this.client, why, began, unheard, frames: this.heardFrames, peak: this.peak, heldMs });
+      // How long the button was held is the client's word when it gave one: a press that reached the node late came with its release.
+      const unheard = this.unheard(heard, released?.clientHeldMs ?? heldMs, stream?.how?.failed);
+      this.deps.log?.info("utterance was empty", { client: this.client, why, began, unheard, frames: this.heardFrames, peak: this.peak, heldMs, ...pressed });
       if (!latest) return;
       this.setSpeaking(false);
       this.setState("idle", began === "button" ? { unheard } : undefined);
       return;
     }
-    this.deps.log?.info("utterance", { client: this.client, why, chars: text.length, ...(dictated ? { dictated: true } : {}), ...(latest ? {} : { overtaken: true }) });
+    this.deps.log?.info("utterance", { client: this.client, why, chars: text.length, ...(dictated ? { dictated: true } : {}), ...(latest ? {} : { overtaken: true }), ...pressed });
     if (dictated) {
       // Typed where the user writes, and sent when they send it: nothing is waited on.
       this.deps.on.dictated?.(text, !latest);
@@ -851,7 +1059,7 @@ export class Conversation {
     this.stopSpeech();
     this.clearThinking();
     this.clearStall();
-    this.queue = [];
+    this.dropQueue();
     this.stream?.dispose();
     this.stream = undefined;
     this.finishing?.dispose();

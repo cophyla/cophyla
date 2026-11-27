@@ -264,6 +264,23 @@ describe("voice", () => {
     expect(states(phone)).toEqual(["listening", "transcribing", "thinking"]);
   }, 20_000);
 
+  test("a release that names its last frame holds the press until that frame is heard, and is answered after the states it moved", async () => {
+    const { ui, phone } = await start({ voice: `wake = "off"\n` });
+    const frame = (seq: number) => phone.signal("voice.audio", { chunk: b64(speechChunk()), seq });
+    await phone.request("voice.ptt", { active: true, at: Date.now() });
+    for (let i = 0; i < 4; i++) frame(i);
+    const release = phone.request("voice.ptt", { active: false, at: Date.now(), upTo: 5 });
+    await sleep(100);
+    // Frames 4 and 5 are still on their way: the press holds.
+    expect(states(phone)).toEqual(["listening"]);
+    frame(4);
+    frame(5);
+    await release;
+    expect(states(phone).slice(0, 2)).toEqual(["listening", "transcribing"]);
+    const message = await ui.next(isMethod("chat.message", (p) => (p as { message: Message }).message.role === "user"));
+    expect((message.params as { message: Message }).message.content).toEqual([{ type: "text", text: TRANSCRIPT }]);
+  }, 20_000);
+
   test("a press that dictates: its words come back to the phone to type, whole and as they grow, and nothing goes to the chat or the brain", async () => {
     const { d, ui, phone } = await start({ voice: `wake = "off"\n` });
     const transcripts: string[] = [];

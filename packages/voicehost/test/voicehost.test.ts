@@ -778,7 +778,11 @@ describe("a press that dictates", () => {
     expect(host.dictates).toBe(true);
     host.ptt(true, { dictate: true });
     host.ptt(false, { dictate: true });
-    expect(asked.filter((a) => a.method === "voice.ptt").map((a) => a.params)).toEqual([{ active: true, dictate: true }, { active: false }]);
+    // Each edge says when it was made.
+    expect(asked.filter((a) => a.method === "voice.ptt").map((a) => a.params)).toEqual([
+      { active: true, dictate: true, at: expect.any(Number) },
+      { active: false, at: expect.any(Number) },
+    ]);
   });
 
   test("a node that does not say it dictates is asked a plain press, which it makes a message as before", () => {
@@ -786,13 +790,13 @@ describe("a press that dictates", () => {
     const host = new VoiceHost({ link, listening: false, log: () => {} });
     expect(host.dictates).toBe(false);
     host.ptt(true, { dictate: true });
-    expect(asked.filter((a) => a.method === "voice.ptt").map((a) => a.params)).toEqual([{ active: true }]);
+    expect(asked.filter((a) => a.method === "voice.ptt").map((a) => a.params)).toEqual([{ active: true, at: expect.any(Number) }]);
   });
 
   test("a press that does not ask to dictate is a plain one, whatever the node can do", () => {
     const { link, asked } = linkWith({ codecs: ["pcm"], dictate: true });
     const host = new VoiceHost({ link, listening: false, log: () => {} });
     host.ptt(true);
-    expect(asked.filter((a) => a.method === "voice.ptt").map((a) => a.params)).toEqual([{ active: true }]);
+    expect(asked.filter((a) => a.method === "voice.ptt").map((a) => a.params)).toEqual([{ active: true, at: expect.any(Number) }]);
   });
 });

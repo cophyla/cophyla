@@ -884,9 +884,23 @@ export const clientRequests = {
    * heard or transcribed, however it began (the button, the talk key or the wake word): nothing
    * is sent, and the button is let go. With nothing to take back it is no error. `dictate`, on
    * the press: the words are this client's to type (`voice.dictated`), not a message to the
-   * chat; nothing wakes the brain, and nothing is read out.
+   * chat; nothing wakes the brain, and nothing is read out. `at` is when the user pressed or let
+   * go, by the client's clock: the press's frames start there, whenever the press arrives.
+   * `upTo`, on a release, is the `seq` of the last `voice.audio` frame the client sent for the
+   * press: the node ends the utterance once it has heard that frame, or a moment later without
+   * it, and hears none after it. A release is answered once the node reached it, after the
+   * states it moved.
    */
-  "voice.ptt": { params: z.object({ active: z.boolean(), cancel: z.literal(true).optional(), dictate: z.literal(true).optional() }), result: Empty },
+  "voice.ptt": {
+    params: z.object({
+      active: z.boolean(),
+      cancel: z.literal(true).optional(),
+      dictate: z.literal(true).optional(),
+      at: Timestamp.optional(),
+      upTo: z.number().int().nonnegative().optional(),
+    }),
+    result: Empty,
+  },
   /**
    * The keyword heads this controller can run itself, for the node to say where its wake word
    * is detected. Sent again on every connect; an empty list hands detection back to the node.

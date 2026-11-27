@@ -17,6 +17,10 @@
 // The queue is flushed whenever the node says the conversation is no longer speaking: the
 // node stops sending mid-sentence on a barge-in, and the phone must stop playing it too.
 //
+// Each frame comes with when it was captured, epoch ms: the worklet stamps it with the audio
+// clock and the page maps that to the wall clock as it arrives (clock.ts), so a frame taken
+// late from a busy page still says when it was spoken.
+//
 // Capture runs on the microphone picked (`choice`) when it is connected, on the system's
 // default otherwise (mics.ts). A device that goes away ends its track: the capture is taken
 // down and `onMicEnded` says whose it was, for the host to ask again. Turning the microphone
@@ -25,12 +29,14 @@
 // The tones that say recording started and stopped (cues.ts) play on the speaker's context
 // too, straight to its output: muting the replies leaves them.
 
+import { CaptureClock } from "./clock.ts";
 import { playCue } from "./cues.ts";
 import type { CueKind } from "./cues.ts";
 import { listMics, listSpeakers, resolveMic } from "./mics.ts";
 import type { MicChoice, MicInUse, MicList } from "./mics.ts";
 import { decodeChunk, toFloat } from "./pcm.ts";
 import { SpeechDecoder } from "./opus.ts";
+import type { CapturedFrame } from "./worklet.ts";
 
 /** Which way a link runs, as far as playback cares: on the LAN (or the machine itself), through the relay, or on a data channel. */
 export type LinkVia = "lan" | "relay" | "p2p";
@@ -261,8 +267,8 @@ export interface SpeechFrame {
 }
 
 export interface AudioDeps {
-  /** Every 40 ms frame the microphone produced; where each goes is the app's to decide. */
-  onFrame: (pcm: Int16Array) => void;
+  /** Every 40 ms frame the microphone produced, and when its last sample was captured (epoch ms); where each goes is the app's to decide. */
+  onFrame: (pcm: Int16Array, at: number) => void;
   /** A numbered reply finished playing here. */
   onPlayed?: (reply: number, stats: PlayStats) => void;
   /** Where the worklet module is served from. */
@@ -302,6 +308,8 @@ export class Audio {
   private cueEnd = 0;
   /** Bumped by a flush, so speech still being decoded from before it is dropped. */
   private generation = 0;
+  /** The capture's audio clock on the wall clock. */
+  private clock = new CaptureClock();
   /** Frames dropped because they could not be decoded, and what came in each codec. */
   readonly counts = { pcm: 0, opus: 0, undecodable: 0 };
 
@@ -372,6 +380,16 @@ export class Audio {
     gain.connect(out.destination);
     this.playback = new PlaybackQueue(out, gain, { floorMs: this.floorMs, ...(this.deps.onPlayed ? { onPlayed: this.deps.onPlayed } : {}) });
     this.deps.onNote?.(`audio ${ctx.sampleRate} Hz in, ${out.sampleRate} Hz out, ${ctx.state}`);
+  }
+
+  /** The microphone is captured: frames are coming, however late the page takes them. */
+  get capturing(): boolean {
+    return this.node !== undefined && this.ctx?.state === "running";
+  }
+
+  /** How far the capture has got, on the wall clock (epoch ms): frames up to here were captured, if not yet taken. */
+  get capturedTo(): number | undefined {
+    return this.ctx && this.node ? this.clock.at(this.ctx.currentTime) : undefined;
   }
 
   /** The device capture runs on, while it runs. */
@@ -454,7 +472,14 @@ export class Audio {
     track?.addEventListener("ended", () => this.micEnded(stream));
     const source = ctx.createMediaStreamSource(stream);
     const node = new AudioWorkletNode(ctx, "capture");
-    node.port.onmessage = (ev: MessageEvent) => this.deps.onFrame(new Int16Array(ev.data as ArrayBuffer));
+    this.clock.reset();
+    node.port.onmessage = (ev: MessageEvent) => {
+      const arrived = Date.now();
+      const data = ev.data as CapturedFrame | ArrayBuffer;
+      // A worklet from before the frames were stamped posts the bare buffer: captured as it arrives.
+      if (data instanceof ArrayBuffer) this.deps.onFrame(new Int16Array(data), arrived);
+      else this.deps.onFrame(new Int16Array(data.pcm), this.clock.wall(data.t, arrived));
+    };
     source.connect(node);
     // A silent gain keeps the graph running without the user hearing themselves.
     const mute = ctx.createGain();
@@ -524,7 +549,11 @@ export class Audio {
   }
 
   async resume(): Promise<void> {
-    if (this.ctx && this.ctx.state === "suspended") await this.ctx.resume();
+    if (this.ctx && this.ctx.state === "suspended") {
+      // The audio clock stood still meanwhile: its offset from the wall clock is found again.
+      this.clock.reset();
+      await this.ctx.resume();
+    }
     if (this.out && this.out.state === "suspended") await this.out.resume();
   }
 

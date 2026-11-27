@@ -1,7 +1,8 @@
 // The microphone's frames on their way up: each numbered, so the node can count the ones
 // that never came, and dropped here instead of queued when the link already holds more
 // than it has sent. Late audio is worth less than the next frame: a frame queued behind a
-// backlog arrives after the moment it belongs to, and delays every frame after it.
+// backlog arrives after the moment it belongs to, and delays every frame after it. The number
+// of the last one sent is kept, for a release to name the last frame of its press (`upTo`).
 
 import type { AudioCodec } from "@cophyla/protocol";
 
@@ -18,6 +19,8 @@ export interface UplinkDeps {
 export class Uplink {
   private deps: UplinkDeps;
   private seq = 0;
+  /** The number of the last frame that went up, once one has. */
+  lastSent?: number;
   readonly counts = { sent: 0, shed: 0, opus: 0, pcm: 0 };
 
   constructor(deps: UplinkDeps) {
@@ -33,6 +36,7 @@ export class Uplink {
     }
     this.counts.sent++;
     this.counts[codec]++;
+    this.lastSent = seq;
     this.deps.send({ chunk, codec, seq });
     return true;
   }

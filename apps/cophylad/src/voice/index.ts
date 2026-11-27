@@ -934,10 +934,15 @@ export class Voice {
     if (stage.status !== "ready" && !(stage.status === "unavailable" && this.sttEngine)) throw new RpcError("unavailable", `speech to text is ${stage.status}${stage.reason ? `: ${stage.reason}` : ""}`);
   }
 
-  /** The push-to-talk button; `dictate` on a press has its words typed by the client. Refused when nothing could transcribe what is said. */
-  ptt(client: Client, active: boolean, dictate = false): void {
+  /**
+   * The push-to-talk button; `dictate` on a press has its words typed by the client, `at` is when
+   * the client says the user did it, and `upTo` on a release the last frame it sent for the
+   * press. Settles once the conversation reached it, which for a release behind queued frames is
+   * after they were heard. Refused when nothing could transcribe what is said.
+   */
+  ptt(client: Client, active: boolean, opts: { dictate?: boolean; at?: number; upTo?: number } = {}): Promise<void> {
     this.hearable(client);
-    this.conversation(client)?.ptt(active, dictate ? { dictate: true } : {});
+    return this.conversation(client)?.ptt(active, opts) ?? Promise.resolve();
   }
 
   /**

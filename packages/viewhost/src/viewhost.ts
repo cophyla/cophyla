@@ -8,7 +8,8 @@
 // Messages are accepted only from that frame's window, and posted only to it. The host's
 // view picker (`ViewChooser`) lies over the frame when a view asks for it (`host.chooseView`),
 // and so do its settings (`SettingsPanel`, `host.settings`). A host that draws no talk button
-// of its own tells the view when its microphone goes off or comes back (`host.mic`). A host
+// of its own tells the view when its microphone goes off or comes back (`host.mic`), and a host
+// whose voice takes the view's talk button (`ptt`) gets its `voice.ptt` to answer. A host
 // with a microphone tells it when recording starts and stops and how loud it is meanwhile
 // (`recording`, `levels`: `host.recording`, `host.levels`). A link a view asks it to open
 // (`host.openLink`) opens only on a fresh click: a click in the frame activates this page too,
@@ -32,7 +33,7 @@
 
 import type { RpcMessage, SessionScopeState, ViewManifest } from "@cophyla/protocol";
 import { Bridge, envelope, isEnvelope } from "./bridge.ts";
-import type { HostMic, HostRequests, PrefsStore, ViewPrefs } from "./bridge.ts";
+import type { HostMic, HostPtt, HostRequests, PrefsStore, ViewPrefs } from "./bridge.ts";
 import { ViewChooser } from "./chooser.ts";
 import { isSettingsPage, SettingsPanel } from "./settings.ts";
 import type { UpdateChecker } from "./updates.ts";
@@ -64,6 +65,8 @@ export interface ViewHostDeps {
   menu?: boolean;
   /** The host has a microphone and no talk button of its own, so the view may draw one: the desktop app. */
   talk?: boolean;
+  /** The host's voice takes the view's `voice.ptt` (its press, release and cancel), answered as the node answers; absent, it goes on to cophylad. */
+  ptt?: (params: HostPtt) => Promise<unknown>;
   /** The host's own voice, for the Voice section of its settings. */
   voice?: VoiceSettings;
   /** Opens a web page in the user's browser, for a view's `host.openLink`. */
@@ -271,6 +274,7 @@ export class ViewHost {
         ...(this.deps.host ? { host: this.deps.host } : {}),
         ...(this.deps.menu ? { menu: true } : {}),
         ...(this.deps.talk ? { talk: true } : {}),
+        ...(this.deps.ptt ? { ptt: this.deps.ptt } : {}),
         chooseView: () => this.chooseView(),
         openSettings: (page?: string) => this.openSettings(page),
         ...(this.deps.openLink ? { openLink: (url: string) => this.openLink(url) } : {}),

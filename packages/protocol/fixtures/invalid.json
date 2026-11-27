@@ -57,6 +57,8 @@
   { "schema": "client.requests.voice.wakeword.result", "why": "phone mode without the head it runs", "value": { "mode": "phone", "threshold": 0.7, "scale": "int16" } },
   { "schema": "client.requests.voice.wakeword.result", "why": "a head listed without its threshold", "value": { "mode": "phone", "head": "a.onnx", "threshold": 0.7, "scale": "int16", "heads": [{ "head": "a.onnx", "scale": "int16" }] } },
   { "schema": "client.requests.voice.ptt.params", "why": "cancel is only ever true", "value": { "active": false, "cancel": false } },
+  { "schema": "client.requests.voice.ptt.params", "why": "a frame number below zero", "value": { "active": false, "upTo": -1 } },
+  { "schema": "client.requests.voice.ptt.params", "why": "a press's time that is not epoch milliseconds", "value": { "active": true, "at": 1764230400000.5 } },
   { "schema": "client.requests.voice.wake.params", "why": "a score above 1", "value": { "score": 1.5 } },
   { "schema": "client.requests.voice.configure.params", "why": "a speed past three times", "value": { "speed": 4 } },
   { "schema": "client.requests.voice.configure.params", "why": "no speed at all", "value": { "speed": 0 } },

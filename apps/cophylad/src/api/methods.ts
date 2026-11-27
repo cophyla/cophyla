@@ -593,9 +593,10 @@ export interface VoiceDeps {
 export function voiceMethods(deps: VoiceDeps): MethodTable {
   return {
     "voice.ptt": {
-      handler: (p, ctx) => {
+      // A release is answered once the frames queued ahead of it were heard, after the states it moved.
+      handler: async (p, ctx) => {
         if (p.cancel) deps.voice.cancel(ctx.client);
-        else deps.voice.ptt(ctx.client, p.active, p.dictate === true);
+        else await deps.voice.ptt(ctx.client, p.active, { ...(p.dictate ? { dictate: true } : {}), ...(p.at !== undefined ? { at: p.at } : {}), ...(p.upTo !== undefined ? { upTo: p.upTo } : {}) });
         return {};
       },
     },

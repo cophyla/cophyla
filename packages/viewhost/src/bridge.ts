@@ -27,7 +27,12 @@
 // clicked) for a view that reads sessions to show. `talk` in `host.ready` says the host has a microphone and no talk button of its
 // own, so a view with the voice scope may draw one that holds `voice.ptt`; such a host says
 // `host.mic` whenever its microphone goes off or comes back, with why it is off, so the view
-// can say so beside the button (and again after `host.ready` while it is off). A host with a
+// can say so beside the button (and again after `host.ready` while it is off). A host whose
+// microphone is its own takes a view's `voice.ptt` itself (`ptt`): the press, the release and
+// the cancel go to its voice, which captures from the moment the view says the user pressed
+// (`at`, the pointer's time; when the bridge took it, when the view says none), and the view
+// is answered with the node's own answer, or its refusal. Without `ptt` it goes on to cophylad
+// as any request does. A host with a
 // microphone says `host.recording` when it starts or stops recording an utterance, however it
 // began, and `host.levels` with how loud each 20 ms of it is meanwhile, so the view can draw
 // it: to a view with the voice scope alone, and `host.recording` again after `host.ready`
@@ -52,9 +57,9 @@
 // `host.ready`: the desktop app, the phone app; media.ts) opens a stream with `host.media`, for a
 // view whose scopes take the read it names (`session.file` or `terminal.file`). DOM-free.
 
-import { failure, notification, notificationScope, protocolError, requestScope, RpcNotification, RpcRequest, signalScope } from "@cophyla/protocol";
+import { clientRequests, ErrorCode, failure, notification, notificationScope, protocolError, requestScope, RpcError, RpcNotification, RpcRequest, signalScope } from "@cophyla/protocol";
 import { MEDIA_READS } from "./media.ts";
-import type { RpcId, RpcMessage, RpcResponse, Scope, ViewManifest } from "@cophyla/protocol";
+import type { ProtocolError, RpcId, RpcMessage, RpcResponse, Scope, ViewManifest } from "@cophyla/protocol";
 import type { HelloResult } from "./connection.ts";
 
 export const ENVELOPE = "cophyla.view/1";
@@ -99,6 +104,14 @@ export interface HostReady {
   media?: true;
 }
 
+/** A view's `voice.ptt` as the host's voice takes it: the press, the release or the cancel, and when the user did it. */
+export interface HostPtt {
+  active: boolean;
+  cancel?: true;
+  dictate?: true;
+  at?: number;
+}
+
 /** The host's microphone, for a view that draws the talk button: why it is off, while it is. */
 export interface HostMic {
   error?: string;
@@ -127,6 +140,8 @@ export interface BridgeConfig {
   menu?: boolean;
   /** The host has a microphone and no talk button of its own. */
   talk?: boolean;
+  /** The host's voice takes the view's `voice.ptt`, answered as the node answers it; absent, it goes on to cophylad. */
+  ptt?: (params: HostPtt) => Promise<unknown>;
   /** Shows the host's view picker (`host.chooseView`); absent, it answers `unsupported`. */
   chooseView?: () => void;
   /** Shows the host's settings (`host.settings`), at the page a view names when it names one; absent, it answers `unsupported`. */
@@ -209,6 +224,7 @@ export class Bridge {
   private host?: HostRequests;
   private hasMenu: boolean;
   private hasTalk: boolean;
+  private ptt?: (params: HostPtt) => Promise<unknown>;
   /** `host.chooseView`: the picker shows, and the answer is that it did. */
   private chooser?: HostRequests;
   /** `host.settings`: the same for the settings. */
@@ -243,6 +259,7 @@ export class Bridge {
     if (cfg.host) this.host = cfg.host;
     this.hasMenu = cfg.menu === true;
     this.hasTalk = cfg.talk === true;
+    if (cfg.ptt) this.ptt = cfg.ptt;
     const show = cfg.chooseView;
     if (show) {
       this.chooser = async () => {
@@ -323,6 +340,10 @@ export class Bridge {
       this.io.toView(failure(req.id, protocolError("denied", `view ${this.manifest.id} lacks scope ${needs}`)));
       return;
     }
+    if (req.method === "voice.ptt" && this.ptt) {
+      this.hostPtt(req, this.ptt);
+      return;
+    }
     const wire = `v${this.instance}-${++this.n}`;
     this.pending.set(wire, { id: req.id, method: req.method });
     this.toCophylad({ ...req, id: wire });
@@ -355,6 +376,21 @@ export class Bridge {
     const held = this.held;
     this.held = undefined;
     for (const frame of held ?? []) this.io.toCophylad(frame);
+  }
+
+  /** The view's talk button, to the host's voice: the press is captured from when the view says it was made, now when it says nothing. */
+  private hostPtt(req: RpcRequest, ptt: (params: HostPtt) => Promise<unknown>): void {
+    const parsed = clientRequests["voice.ptt"].params.safeParse(req.params ?? {});
+    if (!parsed.success) {
+      this.io.toView(failure(req.id, protocolError("invalid", "bad params for voice.ptt", parsed.error.issues)));
+      return;
+    }
+    const p = parsed.data;
+    const params: HostPtt = { active: p.active, ...(p.cancel ? { cancel: true as const } : {}), ...(p.dictate ? { dictate: true as const } : {}), at: p.at ?? Date.now() };
+    ptt(params).then(
+      () => this.io.toView({ jsonrpc: "2.0", id: req.id, result: {} } as RpcResponse),
+      (e: unknown) => this.io.toView(failure(req.id, errorOf(e))),
+    );
   }
 
   /** A request the host answers itself, within the view's scopes. */
@@ -477,6 +513,13 @@ export class Bridge {
     }
     this.io.toView(notification("host.state", { connected: false }));
   }
+}
+
+/** The protocol error a host's request failed with: the node's own, or one made of what it threw. */
+function errorOf(e: unknown): ProtocolError {
+  if (e instanceof RpcError) return e.error;
+  const code = ErrorCode.safeParse((e as { code?: unknown } | null)?.code);
+  return protocolError(code.success ? code.data : "unavailable", e instanceof Error ? e.message : String(e));
 }
 
 function idOf(frame: unknown): RpcId | undefined {

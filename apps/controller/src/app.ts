@@ -250,6 +250,8 @@ export function boot(platform: AppPlatform, doc: Document = document): App {
     container: ui.view,
     stage: (manifest) => platform.stage(conn, manifest),
     host: (method, params) => (method === "host.media" && media ? media.host(method, params) : ownHost(method, params)),
+    // The view's talk button and its Escape are the voice's here: captured from the press, answered as the node answers.
+    ptt: (params) => voice.viewPtt(params),
     ...(media ? { media: true } : {}),
     ...(platform.openLink ? { openLink: platform.openLink } : {}),
     ...(device ? { device } : {}),
@@ -518,7 +520,7 @@ export function boot(platform: AppPlatform, doc: Document = document): App {
       voice.listen(on);
     },
     // the bar's button dictates: the words are typed where the view is open, and the user sends them
-    ptt: (down) => voice.ptt(down, { dictate: true }),
+    ptt: (down, at) => voice.ptt(down, { dictate: true, ...(at !== undefined ? { at } : {}) }),
     mute: (on) => voice.mute(on),
     forget,
   });

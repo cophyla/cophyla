@@ -1,11 +1,13 @@
 // A view's bridge: ids remapped and restored, out-of-scope and unknown methods refused
 // without reaching cophylad, the host's own requests answered by the host, notifications
-// filtered by scope, pending requests failed on disconnect, and two mounts that never share
-// an id.
+// filtered by scope, pending requests failed on disconnect, two mounts that never share
+// an id, and the view's talk button taken by the host's voice.
 
 import { describe, expect, test } from "bun:test";
+import { RpcError } from "@cophyla/protocol";
 import type { Client, RpcMessage, RpcNotification, RpcRequest, ViewManifest } from "@cophyla/protocol";
 import { Bridge, envelope, HELD_MAX, isEnvelope, PREFS_MAX } from "../src/bridge.ts";
+import type { HostPtt } from "../src/bridge.ts";
 import { prefsStore } from "../src/viewhost.ts";
 import type { HelloResult } from "../src/connection.ts";
 
@@ -624,5 +626,82 @@ describe("bridge", () => {
     expect(isEnvelope(e)).toBe(true);
     expect(isEnvelope({ cophyla: "cophyla.view/1" })).toBe(false);
     expect(isEnvelope(null)).toBe(false);
+  });
+});
+
+describe("the view's talk button, taken by the host's voice", () => {
+  const VOICE: ViewManifest = { ...MANIFEST, scopes: [...MANIFEST.scopes!, "voice"] };
+  const SCOPES = [...CLIENT.scopes, "voice" as const];
+
+  function voiced(ptt?: (params: HostPtt) => Promise<unknown>, manifest = VOICE) {
+    const toCophylad: unknown[] = [];
+    const toView: RpcMessage[] = [];
+    const bridge = new Bridge({ manifest, clientScopes: SCOPES, instance: 1, talk: true, ...(ptt ? { ptt } : {}) }, { toCophylad: (f) => toCophylad.push(f), toView: (f) => toView.push(f) });
+    return { bridge, toCophylad, toView };
+  }
+
+  test("press, release and cancel go to the host with the pointer's time, never to cophylad, and are answered as the host answers", async () => {
+    const asked: HostPtt[] = [];
+    const { bridge, toCophylad, toView } = voiced(async (p) => void asked.push(p));
+    bridge.fromView(req("p", "voice.ptt", { active: true, dictate: true, at: 1764230400000 }));
+    bridge.fromView(req("r", "voice.ptt", { active: false, at: 1764230402000 }));
+    bridge.fromView(req("c", "voice.ptt", { active: false, cancel: true, at: 1764230403000 }));
+    await Bun.sleep(0);
+    expect(asked).toEqual([
+      { active: true, dictate: true, at: 1764230400000 },
+      { active: false, at: 1764230402000 },
+      { active: false, cancel: true, at: 1764230403000 },
+    ]);
+    expect(toCophylad).toEqual([]);
+    expect(toView).toEqual([
+      { jsonrpc: "2.0", id: "p", result: {} },
+      { jsonrpc: "2.0", id: "r", result: {} },
+      { jsonrpc: "2.0", id: "c", result: {} },
+    ]);
+  });
+
+  test("an old view that says no time is stamped when the bridge takes its press; a frame number of its own is not passed on", async () => {
+    const asked: HostPtt[] = [];
+    const { bridge } = voiced(async (p) => void asked.push(p));
+    const before = Date.now();
+    bridge.fromView(req("p", "voice.ptt", { active: true }));
+    bridge.fromView(req("r", "voice.ptt", { active: false, upTo: 12 }));
+    await Bun.sleep(0);
+    expect(asked[0]!.at).toBeGreaterThanOrEqual(before);
+    expect(asked[0]!.at).toBeLessThanOrEqual(Date.now());
+    expect(asked[1]).not.toHaveProperty("upTo");
+  });
+
+  test("the node's refusal reaches the view as the node said it, and a plain failure as unavailable", async () => {
+    const refusing = voiced(async () => {
+      throw new RpcError("unavailable", "speech to text is loading");
+    });
+    refusing.bridge.fromView(req("p", "voice.ptt", { active: true }));
+    await Bun.sleep(0);
+    expect(refusing.toView[0]).toMatchObject({ id: "p", error: { message: "speech to text is loading", data: { code: "unavailable" } } });
+    const coded = voiced(async () => {
+      throw Object.assign(new Error("this client has no microphone"), { code: "invalid" });
+    });
+    coded.bridge.fromView(req("p", "voice.ptt", { active: true }));
+    await Bun.sleep(0);
+    expect(coded.toView[0]).toMatchObject({ id: "p", error: { data: { code: "invalid", message: "this client has no microphone" } } });
+  });
+
+  test("bad params are refused by the bridge, and a view without the voice scope is denied before the host hears of it", async () => {
+    const asked: HostPtt[] = [];
+    const { bridge, toView } = voiced(async (p) => void asked.push(p));
+    bridge.fromView(req("p", "voice.ptt", { active: false, cancel: false }));
+    const deaf = voiced(async (p) => void asked.push(p), MANIFEST);
+    deaf.bridge.fromView(req("p", "voice.ptt", { active: true }));
+    await Bun.sleep(0);
+    expect(asked).toEqual([]);
+    expect(toView[0]).toMatchObject({ id: "p", error: { data: { code: "invalid" } } });
+    expect(deaf.toView[0]).toMatchObject({ id: "p", error: { data: { code: "denied" } } });
+  });
+
+  test("without a host voice to take it, voice.ptt goes on to cophylad as it is", () => {
+    const { bridge, toCophylad } = voiced();
+    bridge.fromView(req("p", "voice.ptt", { active: true, dictate: true, at: 1764230400000 }));
+    expect(toCophylad).toEqual([{ jsonrpc: "2.0", id: "v1-1", method: "voice.ptt", params: { active: true, dictate: true, at: 1764230400000 } }]);
   });
 });

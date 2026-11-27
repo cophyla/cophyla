@@ -5,7 +5,9 @@
 //
 // Both sides are asynchronous. The encoder's packets are gathered and sent two at a time,
 // one microphone frame's worth, with a short timer for a lone one at the end of an
-// utterance. The decoder is never flushed mid-reply, which would reset it and click at
+// utterance; each frame sent says the last microphone frame whose audio it completes (the
+// tag it was encoded with), and a flush sends whatever is still inside, for a release to name
+// the last frame of its press. The decoder is never flushed mid-reply, which would reset it and click at
 // every frame: each packet gives one output, so a frame is whole once it has as many as it
 // had packets, and frames resolve in the order they came in. A frame whose outputs never
 // all come is let go after a moment with what it has.
@@ -52,19 +54,25 @@ function unbase64(text: string): Uint8Array {
 /** The microphone's encoder: 16 kHz int16 frames in, base64 frames of packed packets out. */
 export class MicEncoder {
   private encoder: AudioEncoder;
-  private onFrame: (chunk: string) => void;
+  private onFrame: (chunk: string, tag?: number) => void;
   private pending: Uint8Array[] = [];
   private timer?: ReturnType<typeof setTimeout>;
   private timestamp = 0;
   private failed = false;
+  /** The frames encoded and not yet wholly sent: each one's tag and where its audio ends, in µs. */
+  private tags: { tag: number; end: number }[] = [];
+  /** Where the audio of the packets gathered so far ends, and the last tag whose audio is all out. */
+  private gatheredTo = 0;
+  private lastTag?: number;
 
-  constructor(onFrame: (chunk: string) => void, onError: (e: Error) => void = () => {}) {
+  constructor(onFrame: (chunk: string, tag?: number) => void, onError: (e: Error) => void = () => {}) {
     this.onFrame = onFrame;
     this.encoder = new AudioEncoder({
       output: (chunk) => {
         const bytes = new Uint8Array(chunk.byteLength);
         chunk.copyTo(bytes);
         this.pending.push(bytes);
+        this.gatheredTo = Math.max(this.gatheredTo, chunk.timestamp + (chunk.duration ?? 20_000));
         if (this.pending.length >= PACKETS_PER_FRAME) this.send();
         else this.arm();
       },
@@ -81,11 +89,19 @@ export class MicEncoder {
     return !this.failed && this.encoder.state === "configured";
   }
 
-  encode(pcm: Int16Array): void {
+  /** A frame to encode; `tag` names it, and comes back with the frame sent that completes its audio. */
+  encode(pcm: Int16Array, tag?: number): void {
     const data = new AudioData({ format: "s16", sampleRate: MIC_RATE, numberOfChannels: 1, numberOfFrames: pcm.length, timestamp: this.timestamp, data: new Int16Array(pcm) });
     this.timestamp += Math.round((pcm.length / MIC_RATE) * 1_000_000);
+    if (tag !== undefined) this.tags.push({ tag, end: this.timestamp });
     this.encoder.encode(data);
     data.close();
+  }
+
+  /** Everything encoded so far is sent, a lone packet too; resolves once it has been. */
+  async flush(): Promise<void> {
+    if (this.encoder.state === "configured") await this.encoder.flush().catch(() => {});
+    if (this.pending.length) this.send();
   }
 
   private arm(): void {
@@ -101,7 +117,8 @@ export class MicEncoder {
     this.timer = undefined;
     const packets = this.pending;
     this.pending = [];
-    this.onFrame(base64(packPackets(packets)));
+    while (this.tags.length > 0 && this.tags[0]!.end <= this.gatheredTo) this.lastTag = this.tags.shift()!.tag;
+    this.onFrame(base64(packPackets(packets)), this.lastTag);
   }
 
   close(): void {
