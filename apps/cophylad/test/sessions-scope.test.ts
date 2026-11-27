@@ -145,7 +145,8 @@ describe("the scope in the session registry", () => {
     expect(typeof state.setupAt).toBe("number");
     expect(listed()).toEqual(["app", "far", "secret", "spawned"]);
     const personal = rows.get("personal")!.id;
-    expect(heard.slice(at)).toEqual([{ name: "session.state", id: personal, status: "ended" }]);
+    // told once, as ended (another session's own news may go out meanwhile)
+    expect(heard.slice(at).filter((h) => h.id === personal)).toEqual([{ name: "session.state", id: personal, status: "ended" }]);
     // found by no id, by a client or the brain
     expect(mini.sessions.get(personal)).toBeUndefined();
     expect(() => mini.sessions.history(personal)).toThrow(RpcError);
