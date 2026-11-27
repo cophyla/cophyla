@@ -408,7 +408,7 @@ export const MIGRATIONS: string[] = [
   // land, so the embed queue reads its next batch without walking every chunk (filled once, in
   // the background); each minute's spend beside its rollup, so a range's sum reads no sample;
   // and indexes for the questions that scanned: a conversation's spend rows, events by time,
-  // the backup's unacknowledged rows, the live sessions and the open threads. Small tables
+  // the backup's unacknowledged rows, the live sessions, the open threads and asks. Small tables
   // only: an index on session_events or chunks would hold a start for minutes.
   `
   CREATE TABLE session_clears (
@@ -432,6 +432,7 @@ export const MIGRATIONS: string[] = [
   CREATE INDEX harness_sessions_live ON harness_sessions(last_activity, id) WHERE status != 'ended';
   CREATE INDEX threads_open ON threads(started_at, id) WHERE ended_at IS NULL;
   CREATE INDEX harness_sessions_ended ON harness_sessions(ended_at, id) WHERE status = 'ended';
+  CREATE INDEX asks_open ON asks(created_at) WHERE status = 'open';
   -- a store with no events yet has no clears to read in
   INSERT INTO meta (key, value) SELECT 'store.session_clears.v1', 'done' WHERE NOT EXISTS (SELECT 1 FROM session_events);
   `,

@@ -451,14 +451,14 @@ export class Store {
       return row ? askFromRow(row) : undefined;
     },
     listOpen: (): Ask[] => {
-      const rows = this.db.query("SELECT * FROM asks WHERE status = 'open' ORDER BY created_at").all() as AskRow[];
+      const rows = this.db.query("SELECT * FROM asks INDEXED BY asks_open WHERE status = 'open' ORDER BY created_at").all() as AskRow[];
       return rows.map(askFromRow);
     },
     /** Open asks raised by one harness session, for reconciliation after a restart. */
     listOpenBySession: (session: string): Ask[] => {
       const rows = this.db
         .query(
-          `SELECT * FROM asks WHERE status = 'open'
+          `SELECT * FROM asks INDEXED BY asks_open WHERE status = 'open'
              AND json_extract(source, '$.kind') = 'harness' AND json_extract(source, '$.session') = $session
            ORDER BY created_at`,
         )

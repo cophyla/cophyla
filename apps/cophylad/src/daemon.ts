@@ -451,7 +451,8 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
   store.db.log = log.child("store");
   const version = store.migrate();
   const optimizeAt = performance.now();
-  store.optimize();
+  // a test's store is too small to say anything of the real one's plans: none of its statistics
+  if (startEnv["NODE_ENV"] !== "test") store.optimize();
   log.info("store open", { path: p.db, schema: version, optimizeMs: Math.round(performance.now() - optimizeAt) });
   // The long reads, the passive checkpoints and the machine's process list, off this thread: a
   // worker with its own connection, made once and kept. A store with no file has none.
