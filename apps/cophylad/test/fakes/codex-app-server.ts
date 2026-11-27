@@ -9,14 +9,31 @@
 // `proxy`, which runs codex-proxy.ts instead.
 
 import { createHash } from "node:crypto";
-import { appendFileSync, existsSync, readFileSync, writeFileSync, writeSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, renameSync, writeFileSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 
 const home = process.env["CODEX_HOME"] ?? process.cwd();
 const file = (name: string) => join(home, name);
 const readJson = <T>(name: string, fallback: T): T => (existsSync(file(name)) ? (JSON.parse(readFileSync(file(name), "utf8")) as T) : fallback);
-const writeJson = (name: string, value: unknown) => writeFileSync(file(name), JSON.stringify(value, null, 2) + "\n");
+/**
+ * Written whole or not at all: a test polls these files while this process writes them, and one
+ * written in place was read half-written (a JSON parse error on Windows CI). The rename is tried
+ * again while a reader holds the file open.
+ */
+const writeJson = (name: string, value: unknown) => {
+  const tmp = `${file(name)}.${process.pid}.tmp`;
+  writeFileSync(tmp, JSON.stringify(value, null, 2) + "\n");
+  for (let i = 0; ; i++) {
+    try {
+      renameSync(tmp, file(name));
+      return;
+    } catch (e) {
+      if (i >= 50) throw e;
+      Bun.sleepSync(2);
+    }
+  }
+};
 /** Set FAKE_TRACE to a file path to log every line in and out. */
 const trace = process.env["FAKE_TRACE"];
 // A synchronous write: Bun's async stdout writer has been seen to hold a small line back after
