@@ -29,6 +29,7 @@ import { mergeHistory, MINUTE_MS, minuteOf, rollup } from "./rollup.ts";
 import { Sampler } from "./sampler.ts";
 import type { ProfileCounts } from "./sampler.ts";
 import { LlmCounter, ProfileSpend } from "./tokens.ts";
+import { withTask } from "../watchdog/task.ts";
 
 export interface MetricsDeps {
   config: MetricsConfig;
@@ -181,6 +182,11 @@ export class Metrics {
       this.log.warn("sample failed", { error: e instanceof Error ? e.message : String(e) });
       return;
     }
+    withTask("metrics: sample", () => this.took(raw));
+  }
+
+  /** A raw reading taken: the sample built, ringed, rolled up and handed out. */
+  private took(raw: RawSample): void {
     const roots = {
       sessions: this.deps.sessions.pids(),
       platform: process.pid,

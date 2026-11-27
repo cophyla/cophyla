@@ -19,6 +19,7 @@
 
 import type { Ask, AssistantState, AuditEntry, CapabilityEventParams, ClientNotificationParams, Connection, EditableProblem, Message, Node, PressureLevel, PressureResource, Session, SessionEvent, Task, TaskBlocker, Terminal, Thread, Transfer, UserMessageSource, Workspace } from "@cophyla/protocol";
 import type { z } from "zod";
+import { enter, leave, taskId } from "./watchdog/task.ts";
 
 export interface UserMessageEvent {
   at: number;
@@ -175,6 +176,17 @@ export interface ScopedBus {
 interface Entry {
   scope: string;
   fn: Handler<never>;
+  /** The watchdog's name for it while it runs: the event and where the handler was added. */
+  task: number;
+}
+
+/** Where a handler was added: the first frame of its stack outside this file, as `dir/file.ts:line`. */
+function addedAt(stack: string | undefined): string {
+  for (const line of (stack ?? "").split("\n").slice(1)) {
+    const m = /([^\\/()\s]+[\\/][^\\/()\s]+\.ts):(\d+)/.exec(line);
+    if (m && !m[1]!.endsWith("bus.ts")) return `${m[1]!.replace(/\\/g, "/")}:${m[2]}`;
+  }
+  return "?";
 }
 
 /**
@@ -233,7 +245,8 @@ export class Bus {
       set = new Set();
       this.handlers.set(name, set);
     }
-    const entry: Entry = { scope, fn: handler as Handler<never> };
+    // named for the watchdog, so a stall inside a handler says whose it was
+    const entry: Entry = { scope, fn: handler as Handler<never>, task: taskId(`bus ${name} @ ${addedAt(new Error().stack)}`) };
     set.add(entry);
     return () => set!.delete(entry);
   }
@@ -241,6 +254,14 @@ export class Bus {
   private deliver<K extends keyof BusEvents>(name: K, payload: BusEvents[K], scope: string): void {
     const set = this.handlers.get(name);
     if (!set) return;
-    for (const h of set) if (h.scope === ALL || h.scope === scope) (h.fn as Handler<BusEvents[K]>)(payload);
+    for (const h of set) {
+      if (h.scope !== ALL && h.scope !== scope) continue;
+      const prev = enter(h.task);
+      try {
+        (h.fn as Handler<BusEvents[K]>)(payload);
+      } finally {
+        leave(prev);
+      }
+    }
   }
 }

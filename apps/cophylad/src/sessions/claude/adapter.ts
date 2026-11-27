@@ -58,8 +58,8 @@ const SUBAGENT_LIVE_MS = 3000;
 /** How long since its last step a sub-agent that never said it finished still counts as working. */
 const SUBAGENT_LIVE_FOR_MS = 15 * 60_000;
 /** What a pass of the sub-agents' transcripts does before its budget can end it: so many transcripts looked at, or so much read. */
-const SUBAGENT_PASS_FILES = 32;
-const SUBAGENT_PASS_BYTES = 256 * 1024;
+const SUBAGENT_PASS_FILES = 8;
+const SUBAGENT_PASS_BYTES = 64 * 1024;
 /** How long a transcript left behind (the session ended, cleared, or resumed another) is read on for Claude's cost record. */
 const CLOSING_READ_MS = 30000;
 
@@ -534,7 +534,7 @@ export class ClaudeAdapter implements HarnessAdapter {
     if (!tail || tail.path !== path) {
       // A transcript it went back to is read through this tail, from its start: none read on as left behind.
       this.closing = this.closing.filter((c) => c.rec !== rec || c.tail?.path !== path);
-      tail = this.host.openTail(rec, path);
+      tail = withTask("sessions: claude transcript opened", () => this.host.openTail(rec, path));
       // A name the user gave outlives a cleared context: the host keeps it on the parser it drops.
       const named = (rec.parser as { named?: boolean } | undefined)?.named === true;
       rec.parser = newClaudeState();
@@ -719,6 +719,10 @@ export class ClaudeAdapter implements HarnessAdapter {
    * it stopped. `force` starts one when none is under way. Whether every one is read to its end.
    */
   private tailSubagents(state: ClaudeTranscriptState, path: string, now: number, force = false): boolean {
+    return withTask("sessions: claude sub-agents", () => this.passSubagents(state, path, now, force));
+  }
+
+  private passSubagents(state: ClaudeTranscriptState, path: string, now: number, force: boolean): boolean {
     let subs = this.subagents.get(state);
     if (!subs) {
       subs = { tails: new Map(), readAt: -Infinity, info: new Map(), runs: new Map(), workingUntil: 0 };

@@ -750,16 +750,18 @@ describe("claude adapter prices a session with its sub-agents", () => {
     const opus = (10 * 4 + 1000 * 20) / 1e6;
     const sonnet = (100 * 2 + 100 * 10) / 1e6;
     writeFileSync(path, [row("msg_n1", "claude-opus-5-5", { input_tokens: 10, output_tokens: 1000 }), costRecord("sess-many", opus + 40 * sonnet + 0.5), row("msg_n2", "claude-opus-5-5", { input_tokens: 10, output_tokens: 1000 })].join("\n") + "\n");
-    // every pass ends as soon as it may: 32 transcripts a tick
+    // every pass ends as soon as it may: eight transcripts a tick
     subagentPace.budgetMs = -1;
     try {
       clock += 1000;
       await mini.sessions.tick();
       const id = mini.sessions.list().find((x) => x.native.id === "sess-many")!.id;
-      // the record and the turn after it wait for the eight sub-agents not read yet
-      expect(mini.sessions.get(id)!.stats!.cost).toBeCloseTo(opus + 32 * sonnet, 6);
-      clock += 1000;
-      await mini.sessions.tick();
+      // the record and the turn after it wait for the sub-agents not read yet
+      expect(mini.sessions.get(id)!.stats!.cost).toBeCloseTo(opus + 8 * sonnet, 6);
+      for (let i = 0; i < 10 && mini.sessions.get(id)!.stats!.cost < 2 * opus + 40 * sonnet; i++) {
+        clock += 1000;
+        await mini.sessions.tick();
+      }
       expect(mini.sessions.get(id)!.stats!.cost).toBeCloseTo(2 * opus + 40 * sonnet + 0.5, 6);
       // nothing counted twice as the passes go on
       clock += 20_000;
