@@ -63,7 +63,7 @@ import { Policy } from "./gate/policy.ts";
 import { GeminiProvider } from "./llm/gemini.ts";
 import { Llm } from "./llm/index.ts";
 import type { Provider } from "./llm/index.ts";
-import { createLogger, daemonSink } from "./log.ts";
+import { createLogger, daemonSink, flushLogs } from "./log.ts";
 import type { Logger } from "./log.ts";
 import { Watchdog } from "./watchdog/index.ts";
 import type { LoginEnvNote } from "./login-env.ts";
@@ -797,6 +797,8 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
         void (stopper ? stopper() : Promise.resolve()).finally(() => {
           // No desktop app to start the next version: the launcher does, once this process is gone.
           if (how?.relaunch && install) relaunchAfterUpdate(install, env, log.child("update"));
+          // the last lines written now: with a worker started, Bun exits without the exit event
+          flushLogs();
           process.exit(code);
         });
       }),
@@ -830,7 +832,12 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     preflight: opts.restart?.preflight ?? (() => checkSuccessor(join(p.data, "cophylad.log"))),
     respawn: opts.restart?.respawn ?? (() => spawnSuccessor(join(p.data, "cophylad.log"))),
     stop: () => (stopper ? stopper() : Promise.resolve()),
-    exit: opts.restart?.exit ?? ((code) => process.exit(code)),
+    exit:
+      opts.restart?.exit ??
+      ((code) => {
+        flushLogs();
+        process.exit(code);
+      }),
     log: log.child("restart"),
     ...(opts.restart?.delayMs !== undefined ? { delayMs: opts.restart.delayMs } : {}),
   });

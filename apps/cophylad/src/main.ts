@@ -92,6 +92,7 @@ try {
   });
   const shutdown = async () => {
     await daemon.stop();
+    flushLogs();
     process.exit(0);
   };
   process.on("SIGINT", () => void shutdown());

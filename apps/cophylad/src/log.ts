@@ -65,7 +65,11 @@ const FLUSH_BYTES = 64 * 1024;
 const open = new Set<BufferedSink>();
 let exitHooked = false;
 
-/** Writes every buffered line now, synchronously: on exit, and before a fatal stop. */
+/**
+ * Writes every buffered line now, synchronously: before each of the daemon's own exits, and on
+ * the exit event (which Bun does not raise once the daemon's workers have run, so it is not
+ * the one relied on).
+ */
 export function flushLogs(): void {
   for (const s of open) s.flushSync();
 }
