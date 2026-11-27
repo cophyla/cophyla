@@ -2418,15 +2418,24 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
   // The recall index: memory reconciled now, the backfill and the model in the background.
   // Startup never waits on the model; recall is full-text only until it is up.
   const indexLog = log.child("index");
+  // The shipped model runs on the index worker, with the vectors and recall: none of it on this thread.
+  const onWorker = opts.embedder === undefined && config.store.embedding === "local" && background.threaded;
   const embedder =
     opts.embedder !== undefined
       ? (opts.embedder ?? undefined)
-      : config.store.embedding === "off"
+      : config.store.embedding === "off" || onWorker
         ? undefined
         : config.store.embedding === "server"
           ? cloud.embedder()
           : loadEmbedder(config.store.embedding_model ?? DEFAULT_MODEL_DIR, indexLog);
-  void store.index.start({ ...(embedder ? { embedder } : {}), config: config.store, log: indexLog, memories: () => memory.all(), background });
+  void store.index.start({
+    ...(embedder ? { embedder } : {}),
+    ...(onWorker ? { worker: { path: p.db, modelDir: config.store.embedding_model ?? DEFAULT_MODEL_DIR, cacheKib: WORKER_CACHE_KIB } } : {}),
+    config: config.store,
+    log: indexLog,
+    memories: () => memory.all(),
+    background,
+  });
   // a hosted embedder's queue stops while the link is down: the next link-up drains it
   if (config.store.embedding === "server") cloud.onUp(() => store.index.kick());
 

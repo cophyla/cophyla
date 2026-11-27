@@ -46,7 +46,7 @@ export function clipSnippet(text: string, max = SNIPPET_MAX_CHARS): string {
 function eligible(db: Database, filter: RecallFilter, scope?: RecallScope): Set<number> | undefined {
   const f = filterSql(filter, scope);
   if (f.where.length === 0) return undefined;
-  const rows = db.query(`SELECT c.id AS id FROM chunks c ${f.joins} WHERE c.prose = 1 AND ${f.where.join(" AND ")}`).all(f.params) as { id: number }[];
+  const rows = db.query(`SELECT c.id AS id FROM chunks c ${f.joins} WHERE c.prose = 1 AND ${f.where.join(" AND ")} /* scan-ok: the vector leg's mask, on the index worker in the daemon */`).all(f.params) as { id: number }[];
   return new Set(rows.map((r) => r.id));
 }
 

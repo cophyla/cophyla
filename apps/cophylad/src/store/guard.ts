@@ -159,8 +159,10 @@ export class GuardedDatabase extends Database {
   private checked = new Map<string, Checked>();
   private tableNames?: Set<string>;
   private partialIndexes?: Set<string>;
+  private statements = new Set<WeakRef<{ finalize(): void }>>();
+  private swept = 256;
 
-  constructor(path: string, opts: ConstructorParameters<typeof Database>[1] = {}, guard: GuardOptions = {}) {
+  constructor(path: string, opts: ConstructorParameters<typeof Database>[1] = { create: true, readwrite: true }, guard: GuardOptions = {}) {
     super(path, opts as never);
     this.strict = guard.strict ?? process.env["COPHYLA_STRICT_SQL"] === "1";
     this.slowMs = guard.slowMs ?? SLOW_MS;
@@ -277,9 +279,45 @@ export class GuardedDatabase extends Database {
     return stmt;
   }
 
+  /**
+   * Remembers a statement, weakly, so \`close\` can finalize it. bun:sqlite caches twenty
+   * statements a connection and finalizes those as it closes; the rest wait for the collector,
+   * and until then the connection cannot close and its file stays open.
+   */
+  private keep(stmt: { finalize(): void }): void {
+    this.statements.add(new WeakRef(stmt));
+    if (this.statements.size > 2 * this.swept) {
+      for (const ref of this.statements) if (ref.deref() === undefined) this.statements.delete(ref);
+      this.swept = Math.max(256, this.statements.size);
+    }
+  }
+
+  /**
+   * Finalizes every statement it knows of, then closes. A statement bun:sqlite made out of its
+   * sight may still be open: the collector finalizes the ones nobody holds, once, and the close is
+   * tried again; a connection that still cannot close is left to SQLite to close when they go.
+   */
+  override close(throwOnError?: boolean): void {
+    for (const ref of this.statements) {
+      try {
+        ref.deref()?.finalize();
+      } catch {
+        // finalized already
+      }
+    }
+    this.statements.clear();
+    try {
+      super.close(true);
+    } catch {
+      Bun.gc(true);
+      super.close(throwOnError);
+    }
+  }
+
   override prepare<R, P extends SQLQueryBindings | SQLQueryBindings[]>(sql: string, params?: P, ...more: unknown[]): Statement<R, P extends any[] ? P : [P]> {
     // bun:sqlite's `query` passes a third argument (its cache flag): every argument goes through
     const stmt = (super.prepare as (sql: string, ...rest: unknown[]) => Statement<R, P extends any[] ? P : [P]>)(sql, params, ...more);
+    this.keep(stmt);
     // The transaction controls bun:sqlite prepares for itself are not the daemon's statements.
     if (/^\s*(BEGIN|COMMIT|ROLLBACK|SAVEPOINT|RELEASE)\b/i.test(sql)) return stmt;
     return this.wrap(stmt, sql);

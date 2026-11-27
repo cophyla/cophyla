@@ -108,7 +108,7 @@ export class EmbedQueue {
 
   /** Chunks still waiting for a vector, counted up to `cap`. */
   pending(cap = 10_000): number {
-    return (this.deps.db.query("SELECT COUNT(*) AS n FROM (SELECT 1 FROM embed_queue LIMIT $cap)").get({ cap }) as { n: number }).n;
+    return (this.deps.db.query("SELECT COUNT(*) AS n FROM (SELECT 1 FROM embed_queue LIMIT $cap) /* scan-ok: counted no further than its cap */").get({ cap }) as { n: number }).n;
   }
 
   /** Starts a drain if none runs; cheap to call after every write. */

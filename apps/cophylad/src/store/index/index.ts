@@ -19,6 +19,7 @@ import type { Embedder } from "./embed.ts";
 import { InlineBackground } from "../../background/client.ts";
 import type { Background } from "../../background/client.ts";
 import { EmbedQueue, fillQueue } from "./queue.ts";
+import { IndexWorker, RemoteVectors, WorkerEmbedder } from "./remote.ts";
 import type { RecallScope } from "./filters.ts";
 import { recall } from "./recall.ts";
 import { JsVectorIndex } from "./vectors.ts";
@@ -42,6 +43,11 @@ export interface IndexStart {
   memories?: () => Memory[];
   /** Where the long reads go: the background worker; the store's own connection otherwise. */
   background?: Background;
+  /**
+   * The model, the vectors and recall on the index worker (remote.ts), its connection to the
+   * store's file: the daemon's way. `embedder` is then not used.
+   */
+  worker?: { path: string; modelDir?: string; cacheKib: number };
 }
 
 export class SearchIndex {
@@ -53,6 +59,7 @@ export class SearchIndex {
   private queue?: EmbedQueue;
   private stopped = false;
   private starting?: Promise<void>;
+  private remote?: IndexWorker;
   /** The workspace nodes, now and once: left out of the machine's recall. */
   private privateNodes: () => readonly string[];
 
@@ -80,22 +87,41 @@ export class SearchIndex {
       const r = reconcileMemory(this.chunks, opts.memories());
       if (r.updated + r.removed > 0) opts.log.info("memory reindexed", r);
     }
+    if (opts.worker) this.remote = new IndexWorker({ path: opts.worker.path, ...(opts.worker.modelDir ? { modelDir: opts.worker.modelDir } : {}), maxRows: this.config.vector_max_rows, cacheKib: opts.worker.cacheKib, log: opts.log });
     this.starting = (async () => {
+      const ready = this.remote?.start().catch((e: unknown) => {
+        opts.log.warn("the index worker did not start; recall is full-text only", { error: e instanceof Error ? e.message : String(e) });
+        return undefined;
+      });
       const swept = await backfill({ db: this.db, chunks: this.chunks, log: opts.log, batch: this.config.backfill_batch, stopped: () => this.stopped });
       if (!swept) return;
       let embedder: Embedder | undefined;
-      try {
-        embedder = await opts.embedder;
-      } catch (err) {
-        opts.log.warn("embedder failed; recall is full-text only", { error: err instanceof Error ? err.message : String(err) });
+      let vectors: VectorIndex | undefined;
+      let loaded = 0;
+      if (this.remote) {
+        const r = await ready;
+        if (r?.model && r.dim) {
+          embedder = new WorkerEmbedder(this.remote, r.model, r.dim);
+          vectors = new RemoteVectors(this.remote, r.dim);
+          loaded = r.loaded;
+        }
+      } else {
+        try {
+          embedder = await opts.embedder;
+        } catch (err) {
+          opts.log.warn("embedder failed; recall is full-text only", { error: err instanceof Error ? err.message : String(err) });
+        }
       }
       if (!embedder || this.stopped) {
         if (embedder && this.stopped) await embedder.close();
         return;
       }
       this.embedder = embedder;
-      const vectors = new JsVectorIndex(embedder.dim, this.config.vector_max_rows);
-      const loaded = vectors.load(this.db, embedder.model);
+      if (!vectors) {
+        const local = new JsVectorIndex(embedder.dim, this.config.vector_max_rows);
+        loaded = local.load(this.db, embedder.model);
+        vectors = local;
+      }
       this.vectors = vectors;
       this.queue = new EmbedQueue({ db: this.db, embedder, vectors, log: opts.log, batch: this.config.embed_batch, maxChars: this.config.embed_max_chars, ...(embedder.hosted ? { skipNodes: this.privateNodes } : {}) });
       const pending = this.queue.pending();
@@ -121,6 +147,8 @@ export class SearchIndex {
     await this.starting;
     await this.queue?.stop();
     await this.embedder?.close();
+    await this.remote?.stop();
+    this.remote = undefined;
     this.embedder = undefined;
     this.vectors = undefined;
     this.queue = undefined;
@@ -133,6 +161,14 @@ export class SearchIndex {
 
   /** The machine's recall, unless a scope says whose; a workspace node's is full text only on a hosted embedder. */
   recall(params: CapabilityParams<"recall">, scope: RecallScope = { exclude: this.privateNodes() }): Promise<Hit[]> {
+    // the index worker answers it whole, on full text until its vectors are loaded
+    if (this.remote?.usable) return this.remote.opened().then(() => (this.remote?.usable ? this.remote.recall(params, scope) : this.recallHere(params, scope)));
+    return this.recallHere(params, scope);
+  }
+
+  private recallHere(params: CapabilityParams<"recall">, scope: RecallScope): Promise<Hit[]> {
+    // with the vectors on the index worker none are here: full text alone
+    if (this.vectors instanceof RemoteVectors) return recall({ db: this.db, scope }, params);
     const vectors = this.embedder && this.vectors && !("only" in scope && this.embedder.hosted);
     return recall({ db: this.db, scope, ...(vectors ? { embedder: this.embedder!, vectors: this.vectors! } : {}) }, params);
   }

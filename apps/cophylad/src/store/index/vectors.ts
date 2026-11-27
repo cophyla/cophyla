@@ -73,7 +73,7 @@ export class JsVectorIndex implements VectorIndex {
 
   load(db: Database, model: string): number {
     const params = { model, dim: this.dim };
-    const { count } = db.query("SELECT COUNT(*) AS count FROM chunk_vectors WHERE model = $model AND dim = $dim").get(params) as { count: number };
+    const { count } = db.query("SELECT COUNT(*) AS count FROM chunk_vectors WHERE model = $model AND dim = $dim /* scan-ok: the load, once at start, on the index worker in the daemon */").get(params) as { count: number };
     const take = Math.min(count, this.maxRows);
     // Sized for what is on disk and a tenth more, not doubled up to it: 80k rows of 384 dims
     // took a 131k-row array, 50 MB where 31 MB was used.
@@ -81,7 +81,7 @@ export class JsVectorIndex implements VectorIndex {
     // The newest `take`, oldest first, so the newest are the last in and survive any later
     // eviction longest; a row at a time, never the whole table's rows in memory at once.
     const rows = db
-      .query("SELECT chunk, scale, q FROM chunk_vectors WHERE model = $model AND dim = $dim ORDER BY chunk ASC LIMIT $limit OFFSET $skip")
+      .query("SELECT chunk, scale, q FROM chunk_vectors WHERE model = $model AND dim = $dim ORDER BY chunk ASC LIMIT $limit OFFSET $skip /* scan-ok: the load, as above */")
       .iterate({ ...params, limit: take, skip: count - take }) as IterableIterator<{ chunk: number; scale: number; q: Uint8Array }>;
     for (const r of rows) {
       if (r.q.byteLength !== this.dim) continue;
