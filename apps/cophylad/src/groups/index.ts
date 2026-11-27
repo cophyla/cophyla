@@ -258,6 +258,7 @@ export class Groups {
   }
 
   stop(): void {
+    this.stopped = true;
     if (this.timer) clearInterval(this.timer);
     for (const t of this.gathering.values()) clearTimeout(t);
     this.gathering.clear();
@@ -2430,6 +2431,8 @@ export class Groups {
     const r = await teams?.sync(teammate, id, 0).catch(() => undefined);
     if (!r) return;
     for (const e of r.entries) {
+      // a stopped daemon's store is closed: what came back after its stop is not taken
+      if (this.stopped) return;
       try {
         await this.take(owner, id, e.seq, e.entry, e.at, true);
       } catch {
@@ -2913,8 +2916,11 @@ export class Groups {
   async fetchGroup(owner: string, teammate: string, id: string): Promise<boolean> {
     if (this.get(id)) return true;
     await this.adopt(owner, teammate, id);
-    return this.get(id) !== undefined;
+    return !this.stopped && this.get(id) !== undefined;
   }
+
+  /** Stopped with the daemon: an answer from a teammate that comes after it touches nothing. */
+  private stopped = false;
 
   /** Someone left a team or was taken out of it: they and their agents go from the team's groups on this side, as every side does from the team's chain. */
   teamPersonGone(team: string, owner: string): void {
