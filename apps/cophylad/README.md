@@ -134,7 +134,7 @@ anything it does in one go is time they all wait. What it is held to:
    `data/cophylad.log` itself (20 MB, five kept), its stderr going to `cophylad.stderr.log`.
 
 The store runs WAL with `synchronous = NORMAL`, a 32 MB page cache on the main connection (8 MB
-on a worker's), `journal_size_limit` 64 MB and `PRAGMA optimize` at open and hourly; with the
+on a worker's), `journal_size_limit` 64 MB and `PRAGMA optimize` five minutes after the start and hourly; with the
 background worker running, the main connection does no checkpoint of its own and the worker
 runs a passive one every few seconds. The audit is kept 90 days (`[store] audit_retention_days`),
 dropped a batch at a time; a stored minute of metrics folds each session's and sidecar's tree

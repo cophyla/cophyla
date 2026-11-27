@@ -226,7 +226,7 @@ export class Store {
     this.index = new SearchIndex(this.db, () => this.privateNodes());
   }
 
-  /** Brings the planner's statistics up to date, bounded by `analysis_limit`: at open and hourly. */
+  /** Brings the planner's statistics up to date, bounded by `analysis_limit`: a background job's, hourly. */
   optimize(): void {
     this.db.exec("PRAGMA optimize = 0x10002");
   }

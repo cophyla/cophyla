@@ -450,10 +450,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
   const store = new Store(p.db);
   store.db.log = log.child("store");
   const version = store.migrate();
-  const optimizeAt = performance.now();
-  // a test's store is too small to say anything of the real one's plans: none of its statistics
-  if (startEnv["NODE_ENV"] !== "test") store.optimize();
-  log.info("store open", { path: p.db, schema: version, optimizeMs: Math.round(performance.now() - optimizeAt) });
+  log.info("store open", { path: p.db, schema: version });
   // The long reads, the passive checkpoints and the machine's process list, off this thread: a
   // worker with its own connection, made once and kept. A store with no file has none.
   // A test's daemon runs them inline unless it asks: Bun on Windows never frees a worker, and a suite starts hundreds of daemons.
@@ -487,7 +484,8 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
 
   const bus = new Bus();
   // The store's upkeep and the other background jobs, paced on this thread (background/scheduler.ts).
-  const maintenance = new Maintenance({ store, background, bus, nodeId: identity.id, log: log.child("background"), auditRetentionDays: config.store.audit_retention_days, onClearsFilled: () => maintenance.scheduler.trigger("spend.backfill") });
+  // a test's store is too small to say anything of the real one's plans: none of its statistics
+  const maintenance = new Maintenance({ store, background, bus, nodeId: identity.id, log: log.child("background"), auditRetentionDays: config.store.audit_retention_days, onClearsFilled: () => maintenance.scheduler.trigger("spend.backfill"), optimize: startEnv["NODE_ENV"] !== "test" });
   maintenance.start();
   // `sessions` is built below; only a session's own events ask for its node.
   bus.partitions = { isPrivate: (node) => owners.isPrivate(node), sessionNode: (id) => sessions.getAny(id)?.node };

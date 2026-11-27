@@ -28,7 +28,7 @@ import { capText, oneLine, rawIfSmall, RESPONSE_CAP, summariseValue, toolKey, TO
 import type { HarnessAdapter, HookInstallSpec, NormalisedHook, SendOutcome, SessionHost, SessionRecord } from "../model.ts";
 import { isWithin, pathKey } from "../paths.ts";
 import { toolResultText } from "../results.ts";
-import { Tail } from "../tail.ts";
+import { Tail, tailPace } from "../tail.ts";
 import { acceptsCrossSessionInbound, installClaudeHooks, readSettings, uninstallClaudeHooks } from "./hooks.ts";
 import type { ClaudeHookOwner } from "./hooks.ts";
 import { injectClaude } from "./inject.ts";
@@ -77,6 +77,8 @@ interface SubagentTails {
    * the middle of a pass; what it found goes out at the pass's end, as any other read's does.
    */
   unsent?: boolean;
+  /** Where the next pass starts in the list of transcripts: one cut short by its budget goes on from there. */
+  next?: number;
 }
 
 /**
@@ -697,7 +699,18 @@ export class ClaudeAdapter implements HarnessAdapter {
     }
     // A line of the conversation's own may be counting for the ledger: kept for it after.
     const keep = state.onUsage;
-    for (const file of files) {
+    // A conversation with dozens of sub-agents, met at a start, has megabytes in each: the pass
+    // reads them in its budget, from where the last one stopped, and the next tick goes on.
+    const deadline = performance.now() + TICK_BUDGET_MS;
+    const from = files.length > 0 ? (subs.next ?? 0) % files.length : 0;
+    for (let n = 0; n < files.length; n++) {
+      if (n > 0 && performance.now() > deadline) {
+        subs.next = (from + n) % files.length;
+        subs.readAt = -Infinity;
+        tailPace.sliced = true;
+        break;
+      }
+      const file = files[(from + n) % files.length]!;
       const tail = subs.tails.get(file)!;
       const info = subs.info.get(file)!;
       let run = subs.runs.get(file);

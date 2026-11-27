@@ -6,7 +6,9 @@
 // - checkpoint: a passive checkpoint on the worker every few seconds, so no commit on the
 //   daemon's thread ever copies the WAL into the store (the connection's own checkpointing is
 //   off while the worker does it, and back on if the worker is given up).
-// - optimize: the planner's statistics, hourly, bounded by `analysis_limit`.
+// - optimize: the planner's statistics, a few minutes after the start and hourly, bounded by
+//   `analysis_limit` (the first ever, with no statistics yet, reads every index: most of a
+//   second on a store of a year; they are kept in the store, so the ones after are quick).
 // - clears: the clears recorded before `session_clears`, read in once (clears.ts).
 // - audit: the audit kept to its retention, a thousand of the oldest rows a slice.
 // - metrics: the minutes stored before the rollup folded its processes, folded and their spend
@@ -30,6 +32,8 @@ export interface MaintenanceDeps {
   auditRetentionDays: number;
   /** When the clears are all read in: the spend backfill's first run waits for it. */
   onClearsFilled?: () => void;
+  /** Keeps the planner's statistics (not for a test's store). */
+  optimize?: boolean;
   now?: () => number;
 }
 
@@ -37,6 +41,7 @@ const CHECKPOINT_EVERY_MS = 5_000;
 /** Checkpoints that fail in a row before the connection checkpoints for itself again. */
 const CHECKPOINT_FAILURES = 3;
 const OPTIMIZE_EVERY_MS = 3_600_000;
+const OPTIMIZE_FIRST_MS = 300_000;
 const AUDIT_EVERY_MS = 3_600_000;
 const AUDIT_BATCH = 1000;
 const COMPACT_BATCH = 100;
@@ -80,7 +85,7 @@ export class Maintenance {
       store.checkpointBy("worker");
       this.scheduler.add({ name: "store.checkpoint", class: "checkpoint", delayMs: CHECKPOINT_EVERY_MS, everyMs: CHECKPOINT_EVERY_MS, maxDeferMs: 0, run: (ctx) => this.checkpoint(ctx) });
     }
-    this.scheduler.add({ name: "store.optimize", delayMs: OPTIMIZE_EVERY_MS, everyMs: OPTIMIZE_EVERY_MS, run: async () => store.optimize() });
+    if (deps.optimize !== false) this.scheduler.add({ name: "store.optimize", delayMs: OPTIMIZE_FIRST_MS, everyMs: OPTIMIZE_EVERY_MS, run: async () => store.optimize() });
     this.scheduler.add({
       name: "store.clears",
       delayMs: 10_000,
