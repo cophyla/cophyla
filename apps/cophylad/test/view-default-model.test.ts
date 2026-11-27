@@ -158,6 +158,24 @@ describe("default view model", () => {
     expect(ids()).toEqual(["sess_a"]);
   });
 
+  test("the line back: a session that ended while it was down, its `ended` never heard, leaves as the node lists the live ones", () => {
+    const s = ready();
+    apply(s, { type: "session.state", params: session("sess_a", 100) });
+    apply(s, { type: "session.state", params: session("sess_b", 200) });
+    open(s, "sess_b");
+    apply(s, { type: "host.state", params: { connected: false } });
+    // the session tabs stay while the line is down
+    expect([...s.sessions.keys()]).toEqual(["sess_a", "sess_b"]);
+    apply(s, { type: "host.state", params: { connected: true } });
+    // sess_b ended meanwhile: the node sends sess_a again, and lists it alone
+    apply(s, { type: "session.state", params: session("sess_a", 100, { lastActivity: 300 }) });
+    apply(s, { type: "sessions.live", ids: ["sess_a"] });
+    expect([...s.sessions.keys()]).toEqual(["sess_a"]);
+    // one started since comes as ever
+    apply(s, { type: "session.state", params: session("sess_c", 400) });
+    expect([...s.sessions.keys()]).toEqual(["sess_a", "sess_c"]);
+  });
+
   test("tabs group under the folder their sessions work in, the groups by name; a workspace inside another where a session is open is a group under it", () => {
     const s = ready();
     const OTHER = "node_01ARZ3NDEKTSV4RRFFQ69G5FAW";

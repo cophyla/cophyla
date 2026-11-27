@@ -541,6 +541,7 @@ rpc.onNotification((n) => {
         void loadGrants();
         void loadConnections();
         void loadNodes();
+        void loadSessions();
         void loadTerminals();
         void loadTransfers();
         void loadContextOn();
@@ -782,6 +783,27 @@ rpc.onNotification((n) => {
 });
 
 // --- to the host ----------------------------------------------------------------------------------
+
+/**
+ * The node's live sessions, asked for as the line comes back: the node sends each live one
+ * again, but one that ended while the line was down (a phone in a pocket, a node restarted)
+ * sends nothing, so what it no longer lists leaves the rail, as its `ended` would have taken it.
+ */
+async function loadSessions(): Promise<void> {
+  if (!state.scopes.includes("sessions:read")) return;
+  try {
+    const { sessions } = await rpc.request<{ sessions: Session[] }>("session.list", {});
+    dispatch({ type: "sessions.live", ids: sessions.map((s) => s.id) });
+    if (ui.kill !== undefined && !state.sessions.has(ui.kill.session)) ui.kill = undefined;
+    // the session shown is gone: the chat shows, as when one ends while it is watched
+    if (ui.selected !== undefined && !state.sessions.has(ui.selected)) {
+      ui.selected = undefined;
+      openTab();
+    }
+  } catch {
+    // a node that cannot list them leaves the rail as the line left it
+  }
+}
 
 /** The node's terminals; a node without tether has none, and says so quietly. */
 async function loadTerminals(): Promise<void> {

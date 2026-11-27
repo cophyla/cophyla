@@ -385,6 +385,8 @@ export type Action =
   | { type: "host.ready"; params: HostReady }
   | { type: "host.state"; params: { connected: boolean } }
   | { type: "session.state"; params: Session }
+  /** The sessions the node lists as live, asked again as the line comes back. */
+  | { type: "sessions.live"; ids: string[] }
   | { type: "session.event"; params: SessionEvent }
   | { type: "terminal.state"; params: Terminal }
   | { type: "terminals"; terminals: Terminal[] }
@@ -954,6 +956,12 @@ export function apply(state: ViewState, action: Action): ViewState {
       // no more. Idle while its shells run or a dialog is open is not finished.
       if (atWork(s)) c.unseen = false;
       else if (was !== undefined && atWork(was)) c.unseen = !c.open;
+      return state;
+    }
+    case "sessions.live": {
+      // One that ended while the line was down never heard its `ended`: what the node no longer lists leaves the rail.
+      const live = new Set(action.ids);
+      for (const id of [...state.sessions.keys()]) if (!live.has(id)) state.sessions.delete(id);
       return state;
     }
     case "session.event": {
