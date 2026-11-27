@@ -11,6 +11,7 @@ import { spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import { createInterface } from "node:readline";
 import type { Logger } from "../../log.ts";
+import { lineSplitter } from "../../rpc/lines.ts";
 
 export interface CodexAppServerOptions {
   command: string;
@@ -127,10 +128,9 @@ export class CodexAppServer {
     this.child = child;
     child.on("error", (e) => this.log.warn("app-server error", { error: e.message }));
     child.stderr?.setEncoding("utf8");
-    child.stderr?.on("data", (d: string) => {
-      const line = d.trim();
-      if (line) this.log.debug("app-server stderr", { line: line.slice(0, 500) });
-    });
+    const stderrLines = lineSplitter((line) => this.log.debug("app-server stderr", { line: line.trim().slice(0, 500) }));
+    child.stderr?.on("data", (d: string) => stderrLines.push(d));
+    child.stderr?.on("end", () => stderrLines.end());
     createInterface({ input: child.stdout! }).on("line", (line) => this.onLine(line));
     child.on("exit", (code, signal) => {
       if (this.child !== child) return;

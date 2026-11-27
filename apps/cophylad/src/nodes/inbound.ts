@@ -725,7 +725,7 @@ export class Inbound {
       }
       case "replicate.snapshot": {
         if (!peer.info.backup) throw new RpcError("denied", "not a backup");
-        return this.deps.replicator.snapshot();
+        return this.deps.replicator.snapshotJson();
       }
       case "remote.pair": {
         if (peer.info.hands) throw new RpcError("denied", "a hands node pairs no viewer with another node's desktop");

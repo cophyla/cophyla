@@ -8,6 +8,14 @@ import { failure, protocolError, RpcError } from "@cophyla/protocol";
 import type { ProtocolError, RpcId } from "@cophyla/protocol";
 import type { Logger } from "../log.ts";
 
+/** An answer already written out as JSON (a replication snapshot read on a worker): sent as it is. */
+export class RawJson {
+  readonly json: string;
+  constructor(json: string) {
+    this.json = json;
+  }
+}
+
 export interface RpcPeerOptions {
   /** Sends one frame; false when the transport is gone. */
   write: (text: string) => boolean;
@@ -146,6 +154,9 @@ export class RpcPeer {
   write(message: unknown): boolean {
     if (this.closed) return false;
     try {
+      // an answer already written out as JSON is put in as it is
+      const m = message as { result?: unknown; id?: unknown } | null;
+      if (m && m.result instanceof RawJson) return this.opts.write(`{"jsonrpc":"2.0","id":${JSON.stringify(m.id)},"result":${m.result.json}}`);
       return this.opts.write(JSON.stringify(message));
     } catch (e) {
       this.opts.log.warn("write to peer failed", { peer: this.label(), error: e instanceof Error ? e.message : String(e) });

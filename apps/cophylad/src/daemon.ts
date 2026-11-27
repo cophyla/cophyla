@@ -1292,6 +1292,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     config,
     paths: p,
     store,
+    background,
     bus,
     gate,
     policy,

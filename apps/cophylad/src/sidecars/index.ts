@@ -2,14 +2,17 @@
 // endpoint, restart it with backoff when it dies, and take it down with the daemon. A
 // sidecar is always given an absolute command and binds to loopback only: the port comes
 // from here, so nothing has to agree on one in advance. Its output goes to
-// `data/sidecars/<name>.log`, rotated so a chatty engine cannot fill the disk. On a hybrid
-// CPU the spawn carries the same affinity mask the daemon pinned itself to, because an
-// inference process scheduled onto the efficiency cores runs three times slower.
+// `data/sidecars/<name>.log`, a whole line at a time, buffered and rotated so a chatty engine
+// can neither fill the disk nor hold the daemon's thread. On a hybrid CPU the spawn carries
+// the performance cores' mask `[voice] cpu_affinity` gives, because an inference process
+// scheduled onto the efficiency cores runs three times slower.
 
-import { appendFileSync, mkdirSync, renameSync, rmSync, statSync } from "node:fs";
+import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { Subprocess } from "bun";
-import type { Logger } from "../log.ts";
+import { fileSink } from "../log.ts";
+import type { BufferedSink, Logger } from "../log.ts";
+import { lineSplitter } from "../rpc/lines.ts";
 
 export type SidecarStatus = "starting" | "ready" | "unhealthy" | "restarting" | "failed" | "stopped";
 
@@ -93,6 +96,7 @@ export class Sidecar {
   private handlers = new Set<(s: SidecarState) => void>();
   private ready?: { resolve: () => void; reject: (e: Error) => void };
   private logPath: string;
+  private logSink?: BufferedSink;
 
   constructor(spec: SidecarSpec, deps: SidecarDeps) {
     this.spec = spec;
@@ -146,15 +150,14 @@ export class Sidecar {
     else ready.resolve();
   }
 
-  private write(line: string): void {
+  /** Writes lines to the sidecar's log, buffered and rotated by size: never a file write a line on the daemon's thread. */
+  private write(lines: string): void {
     try {
-      mkdirSync(this.deps.dir, { recursive: true });
-      try {
-        if (statSync(this.logPath).size > LOG_CAP) renameSync(this.logPath, this.logPath + ".1");
-      } catch {
-        // no log yet, or another process holds it: appending is still fine
+      if (!this.logSink) {
+        mkdirSync(this.deps.dir, { recursive: true });
+        this.logSink = fileSink(this.logPath, { rotateBytes: LOG_CAP, keep: 2 });
       }
-      appendFileSync(this.logPath, line);
+      this.logSink(lines.replace(/\n$/, ""));
     } catch {
       // a log that cannot be written never stops the sidecar
     }
@@ -164,7 +167,9 @@ export class Sidecar {
     if (!stream) return;
     void (async () => {
       const decoder = new TextDecoder();
-      for await (const chunk of stream) this.write(decoder.decode(chunk).replace(/^/gm, `[${tag}] `));
+      const lines = lineSplitter((line) => this.write(`[${tag}] ${line}`));
+      for await (const chunk of stream) lines.push(decoder.decode(chunk, { stream: true }));
+      lines.end();
     })().catch(() => {});
   }
 

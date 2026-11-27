@@ -22,6 +22,7 @@ import { applyPidAffinity } from "./affinity.ts";
 import type { SttEngine, SttStream, TtsEngine } from "./engines.ts";
 import { OUT_RATE } from "./engines.ts";
 import type { SherpaTtsEngine } from "./sherpa-tts.ts";
+import { lineSplitter } from "../rpc/lines.ts";
 
 export type SpeechStage = "stt" | "tts";
 
@@ -93,13 +94,9 @@ export const bunWorker: SpawnWorker = (on) => {
   });
   void (async () => {
     const decoder = new TextDecoder();
-    let rest = "";
-    for await (const chunk of proc.stderr as ReadableStream<Uint8Array>) {
-      rest += decoder.decode(chunk, { stream: true });
-      const lines = rest.split(/\r?\n/);
-      rest = lines.pop() ?? "";
-      for (const line of lines) if (line.trim()) on.stderr?.(line);
-    }
+    const lines = lineSplitter((line) => on.stderr?.(line));
+    for await (const chunk of proc.stderr as ReadableStream<Uint8Array>) lines.push(decoder.decode(chunk, { stream: true }));
+    lines.end();
   })().catch(() => {});
   return {
     pid: proc.pid,

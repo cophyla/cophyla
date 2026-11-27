@@ -9,6 +9,13 @@
 // `grants.local` (the phones paired on this node while it was not the primary), `voice`
 // (the speech engine picked for this machine) and `sessions.scope` (which of this machine's
 // sessions it connects to), which a snapshot keeps rather than wipes.
+//
+// A snapshot is read on the background worker, in one read transaction, and goes out as the
+// JSON text it read: the daemon's thread neither walks the tables nor writes them out. Its
+// sequence is the one at the request, so it may hold writes numbered after it; a backup keeps
+// the writes that arrive while it syncs and applies the ones past the snapshot's sequence after
+// it (each write is a whole row or a delete by key, so one applied twice is no harm), instead of
+// dropping them and finding a gap that asks for another snapshot.
 
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
@@ -16,6 +23,8 @@ import type { ReplicaFile, ReplicaSnapshot, ReplicaWrite } from "@cophyla/protoc
 import type { Paths } from "../config/load.ts";
 import { snapshotFiles, snapshotTree } from "../editable/watcher.ts";
 import type { Logger } from "../log.ts";
+import type { Background } from "../background/client.ts";
+import { RawJson } from "../rpc/peer.ts";
 import type { Store, StoreWrite } from "../store/index.ts";
 import { PROFILE_KV_NS } from "../sessions/profiles.ts";
 import { GRANTS_NS, LOCAL_GRANTS_NS } from "../grants/namespaces.ts";
@@ -24,6 +33,9 @@ import { SCOPE_KV_NS } from "../sessions/scope.ts";
 
 /** The kv namespaces that are a node's own and never replicated: its profiles (their ids, usual accounts and launches), its updates, its own grants, its speech engine and which of its sessions it connects to. */
 export const EXCLUDED_KV_NS = [...PROFILE_KV_NS, "update", LOCAL_GRANTS_NS, VOICE_KV_NS, SCOPE_KV_NS];
+
+/** Writes and files a backup keeps while it syncs; past it, the sync ends in another snapshot. */
+const HELD_MAX = 10_000;
 
 const TEXT_EXT = new Set([".ts", ".js", ".mjs", ".md", ".json", ".html", ".css", ".txt", ".toml", ".svg"]);
 
@@ -85,6 +97,8 @@ export interface ReplicatorDeps {
   paths: EditablePaths;
   epoch: () => number;
   log: Logger;
+  /** Where a snapshot is read: the background worker, when there is one. */
+  background?: Background;
 }
 
 /** The primary's side: numbers each write and file change and sends them to every backup. */
@@ -143,6 +157,20 @@ export class Replicator {
   snapshot(): ReplicaSnapshot {
     return { epoch: this.deps.epoch(), seq: this.seqValue, tables: this.deps.store.replicaSnapshot(EXCLUDED_KV_NS), files: editableFiles(this.deps.paths) };
   }
+
+  /**
+   * The snapshot as the JSON text the link sends: the sequence taken now, the tables read on the
+   * background worker (here, with none), the editable files here.
+   */
+  async snapshotJson(): Promise<RawJson> {
+    const epoch = this.deps.epoch();
+    const seq = this.seqValue;
+    const bg = this.deps.background;
+    const tables = bg?.threaded
+      ? await bg.call<string>("replica.snapshot", { excludeKvNs: EXCLUDED_KV_NS, privateNodes: [...this.deps.store.privateNodes()] }, { class: "read" })
+      : JSON.stringify(this.deps.store.replicaSnapshot(EXCLUDED_KV_NS));
+    return new RawJson(`{"epoch":${epoch},"seq":${seq},"tables":${tables},"files":${JSON.stringify(editableFiles(this.deps.paths))}}`);
+  }
 }
 
 export interface ReplicaDeps {
@@ -164,6 +192,8 @@ export class Replica {
   private epoch = -1;
   private seq = -1;
   private syncing?: Promise<void>;
+  /** What came while a snapshot was being taken: applied after it, past its sequence. Too much and another snapshot is taken. */
+  private held?: { writes: ReplicaWrite[]; files: ReplicaFile[]; over: boolean };
   private rescanTimer?: ReturnType<typeof setTimeout>;
   /** Snapshots taken, for the tests. */
   snapshots = 0;
@@ -193,11 +223,15 @@ export class Replica {
   /** Fetches and applies a snapshot; concurrent calls share one. */
   sync(): Promise<void> {
     if (this.syncing) return this.syncing;
+    this.held = { writes: [], files: [], over: false };
     this.syncing = (async () => {
       const snapshot = await this.deps.fetchSnapshot();
       await this.applySnapshot(snapshot);
     })().finally(() => {
       this.syncing = undefined;
+      const held = this.held;
+      this.held = undefined;
+      if (held) this.replay(held);
     });
     return this.syncing;
   }
@@ -222,9 +256,28 @@ export class Replica {
     this.deps.log.info("replica synced", { epoch: this.epoch, seq: this.seq, files: snapshot.files.length, threads: snapshot.tables.threads.length, tasks: snapshot.tables.tasks.length });
   }
 
+  /** What came during a sync, after its snapshot: the writes past it in order, then the files. */
+  private replay(held: { writes: ReplicaWrite[]; files: ReplicaFile[]; over: boolean }): void {
+    if (held.over) {
+      this.deps.log.info("replica: too much came during the sync; taking another snapshot");
+      void this.sync().catch((e: unknown) => this.deps.log.warn("replica sync failed", { error: e instanceof Error ? e.message : String(e) }));
+      return;
+    }
+    for (const w of held.writes) {
+      // already in the snapshot: the primary read its tables after this was written
+      if (w.epoch === this.epoch && w.seq <= this.seq) continue;
+      this.onWrite(w);
+      if (this.syncing) return;
+    }
+    for (const f of held.files) this.onFile(f);
+  }
+
   /** One write from the primary: applied in order, or the whole thing again on a gap or a new epoch. */
   onWrite(w: ReplicaWrite): void {
-    if (this.syncing) return;
+    if (this.syncing) {
+      this.hold((h) => h.writes.push(w));
+      return;
+    }
     if (w.epoch !== this.epoch || w.seq !== this.seq + 1) {
       this.deps.log.info("replica behind; taking a snapshot", { have: this.position, got: { epoch: w.epoch, seq: w.seq } });
       void this.sync().catch((e: unknown) => this.deps.log.warn("replica sync failed", { error: e instanceof Error ? e.message : String(e) }));
@@ -237,11 +290,25 @@ export class Replica {
   }
 
   onFile(f: ReplicaFile): void {
-    if (this.syncing) return;
+    if (this.syncing) {
+      this.hold((h) => h.files.push(f));
+      return;
+    }
     this.writeFile(f);
     if (this.rescanTimer) clearTimeout(this.rescanTimer);
     this.rescanTimer = setTimeout(() => void this.deps.rescan(), 50);
     if (typeof this.rescanTimer === "object" && "unref" in this.rescanTimer) this.rescanTimer.unref();
+  }
+
+  private hold(add: (h: { writes: ReplicaWrite[]; files: ReplicaFile[] }) => void): void {
+    const h = this.held;
+    if (!h || h.over) return;
+    add(h);
+    if (h.writes.length + h.files.length > HELD_MAX) {
+      h.over = true;
+      h.writes = [];
+      h.files = [];
+    }
   }
 
   /** Writes or removes the file the record names; returns the absolute path written. */

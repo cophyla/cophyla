@@ -91,7 +91,7 @@ import type { HookAnswers, Question } from "./questions.ts";
 import { toolResultText } from "./results.ts";
 import { admits, ScopeStore } from "./scope.ts";
 import { shimArgv, shimCommand, writeHookJson, writeShim } from "./shim.ts";
-import { mtimeOf, REPLAY_BYTES, Tail } from "./tail.ts";
+import { mtimeOf, REPLAY_BYTES, Tail, tailPace } from "./tail.ts";
 import { pickOpener } from "./terminals.ts";
 import type { TerminalOpener } from "./terminals.ts";
 import { cliOfName, TerminalClis } from "./tether/cli.ts";
@@ -897,6 +897,7 @@ export class Sessions implements SessionHost {
         void this.installAgents();
       }
       this.clis?.tick();
+      tailPace.sliced = false;
       for (const adapter of this.adapters.values()) {
         try {
           await adapter.tick(now);
@@ -905,6 +906,8 @@ export class Sessions implements SessionHost {
         }
       }
       this.readDialogs();
+      // a transcript read a slice of: the rest on the next turn, not the next poll
+      if (tailPace.sliced) this.tickAgain = true;
     } finally {
       this.ticking = false;
       if (this.tickAgain) {

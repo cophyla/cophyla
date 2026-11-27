@@ -40,6 +40,7 @@ import { countSubagentRow, subagentInfo, subagentMeta, subagentTranscripts } fro
 import type { SubagentInfo } from "./subagents.ts";
 import { applyClaudeCostRecord, applyClaudeRow, applyClaudeUsage, isCostRecord, newClaudeState, rowAt, statsFor } from "./transcript.ts";
 import type { ClaudePrice, ClaudeStatsOptions, ClaudeTranscriptState } from "./transcript.ts";
+import { withTask } from "../../watchdog/task.ts";
 
 export { subagentTranscripts };
 
@@ -60,6 +61,8 @@ const SUBAGENT_LIVE_FOR_MS = 15 * 60_000;
 const CLOSING_READ_MS = 30000;
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+/** How long a tick reads transcripts before it lets the loop turn. */
+const TICK_BUDGET_MS = 8;
 
 /** The sub-agents' transcripts read into one parser's usage, and when they were last read. */
 interface SubagentTails {
@@ -334,8 +337,16 @@ export class ClaudeAdapter implements HarnessAdapter {
       const last = rec.lastHookAt ?? rec.session.lastActivity;
       if (now - last > this.host.config.claude_hook_grace_ms) this.host.end(rec, "inactive", now);
     }
-    for (const rec of this.host.records("claude")) this.tailTranscript(rec, now);
-    this.readClosing(now);
+    // The transcripts, a turn of the loop between them once the tick has had its budget: a
+    // tick meeting many sessions at a start never holds the daemon's thread for all of them.
+    let sliceAt = performance.now();
+    for (const rec of this.host.records("claude")) {
+      withTask("sessions: claude transcript", () => this.tailTranscript(rec, now));
+      if (performance.now() - sliceAt < TICK_BUDGET_MS) continue;
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      sliceAt = performance.now();
+    }
+    withTask("sessions: claude transcripts left", () => this.readClosing(now));
   }
 
   /**

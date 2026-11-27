@@ -9,6 +9,7 @@
 // here leaves them, recall answers the machine without them, and `purgePartition` takes
 // them away, leaving its sessions' ids as tombstones.
 
+import type { Database } from "bun:sqlite";
 import type { Ask, AuditEntry, Decision, Message, MetricsSample, NodeRecord, Outcome, Principal, ReplicaSnapshot, ReplicaTable, ReplicaWrite, Session, SessionEvent, SessionStatus, Task, TaskStatus, Thread, UsageDimension, Workspace } from "@cophyla/protocol";
 import { CLEARS_FILLED } from "./clears.ts";
 import { GuardedDatabase } from "./guard.ts";
@@ -1379,13 +1380,7 @@ export class Store {
 
   /** The primary-only tables as a snapshot, `kv` without the named namespaces. Files are the caller's. */
   replicaSnapshot(excludeKvNs: string[]): ReplicaSnapshot["tables"] {
-    return {
-      threads: this.threads.dump(),
-      messages: this.messages.dump(),
-      tasks: this.tasks.dump(),
-      workspaces: this.workspaces.list().filter((w) => !this.isPrivate(w.node)),
-      kv: this.kv.dump(excludeKvNs),
-    };
+    return readSnapshot(this.db, excludeKvNs, this.privateNodes());
   }
 
   // --- a workspace node removed ------------------------------------------------------------
@@ -1455,6 +1450,28 @@ export class Store {
         });
     },
     delete: (key: string): boolean => this.db.query("DELETE FROM policy WHERE key = $key").run({ key }).changes > 0,
+  };
+}
+
+// --- a snapshot, on any connection -----------------------------------------------------------
+
+/**
+ * The primary-only tables as a snapshot, `kv` without the named namespaces and the workspaces
+ * of the workspace nodes left out: `Store.replicaSnapshot` on the daemon's connection, and the
+ * background worker's `replica.snapshot` on its own, in one read transaction there.
+ */
+export function readSnapshot(db: Database, excludeKvNs: string[], privateNodes: readonly string[]): ReplicaSnapshot["tables"] {
+  const whole = (sql: string) => db.query(`${sql} /* scan-ok: a snapshot's whole read, on the background worker in production */`).all();
+  return {
+    threads: (whole("SELECT * FROM threads ORDER BY started_at, id") as ThreadRow[]).map(threadFromRow),
+    messages: (whole("SELECT * FROM messages ORDER BY at, id") as MessageRow[]).map(messageFromRow),
+    tasks: (whole("SELECT * FROM tasks ORDER BY created_at, id") as TaskRow[]).map(taskFromRow),
+    workspaces: (whole("SELECT * FROM workspaces ORDER BY last_activity DESC, id DESC") as WorkspaceRow[]).map(workspaceFromRow).filter((w) => !privateNodes.includes(w.node)),
+    kv: (
+      db
+        .query("SELECT ns, key, value, updated_at FROM kv WHERE ns NOT IN (SELECT value FROM json_each($exclude)) ORDER BY ns, key /* scan-ok: a snapshot's whole read, on the background worker in production */")
+        .all({ exclude: JSON.stringify(excludeKvNs) }) as { ns: string; key: string; value: string; updated_at: number }[]
+    ).map((r) => ({ ns: r.ns, key: r.key, value: JSON.parse(r.value) as unknown, updatedAt: r.updated_at })),
   };
 }
 

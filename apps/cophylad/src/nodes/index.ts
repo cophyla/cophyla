@@ -80,6 +80,7 @@ import type { PipeHub, PipeWire } from "../remote/pipes.ts";
 import type { LinkWay, Ports } from "../remote/ports.ts";
 import { PortLinks } from "./ports.ts";
 import type { Store } from "../store/index.ts";
+import type { Background } from "../background/client.ts";
 import type { Tasks } from "../tasks/index.ts";
 import type { TaskScheduler } from "../tasks/scheduler.ts";
 import type { Chat } from "../chat/index.ts";
@@ -124,6 +125,8 @@ export interface NodesDeps {
   config: Config;
   paths: Paths;
   store: Store;
+  /** Where a replication snapshot is read: the background worker. */
+  background?: Background;
   bus: Bus;
   gate: Gate;
   policy: Policy;
@@ -341,7 +344,7 @@ export class Nodes {
       ...(deps.now ? { now: deps.now } : {}),
     });
     this.mirror = new Mirror();
-    this.replicator = new Replicator({ store: deps.store, paths: deps.paths, epoch: () => this.role.epoch, log: this.log.child("replication") });
+    this.replicator = new Replicator({ store: deps.store, paths: deps.paths, epoch: () => this.role.epoch, log: this.log.child("replication"), ...(deps.background ? { background: deps.background } : {}) });
     const streams = new StreamLinks({
       selfId: () => deps.identity.id,
       gate: deps.gate,

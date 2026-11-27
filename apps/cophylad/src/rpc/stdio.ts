@@ -10,6 +10,7 @@ import type { RpcId } from "@cophyla/protocol";
 import type { Logger } from "../log.ts";
 import { ChildRpcError, RpcPeer } from "./peer.ts";
 import type { RequestOptions } from "./peer.ts";
+import { lineSplitter } from "./lines.ts";
 
 export { ChildRpcError };
 export type { RequestOptions };
@@ -67,10 +68,13 @@ export class StdioRpc {
     // listener that is an uncaught error. The exit handler already deals with the child.
     child.stdin?.on("error", (e) => opts.log.debug("write to child failed", { error: e.message }));
     child.stderr?.setEncoding("utf8");
+    // whole lines to the handler: a chunk's last half line waits for the rest of it
+    const stderrLines = lineSplitter((line) => opts.onStderr?.(line.trim()));
     child.stderr?.on("data", (d: string) => {
       this.stderrBuf = (this.stderrBuf + d).slice(-(opts.stderrTail ?? STDERR_TAIL));
-      if (opts.onStderr) for (const line of d.split(/\r?\n/)) if (line.trim()) opts.onStderr(line.trim());
+      if (opts.onStderr) stderrLines.push(d);
     });
+    child.stderr?.on("end", () => stderrLines.end());
     if (child.stdout) createInterface({ input: child.stdout }).on("line", (line) => this.peer.onText(line));
     child.on("exit", (code, signal) => this.onExit(code, signal));
   }

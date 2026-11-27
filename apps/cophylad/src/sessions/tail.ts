@@ -3,12 +3,18 @@
 // fresh tail reads the whole file, so a parser's state is whole, but says from which offset
 // its lines are new to the record: the end of what an earlier tail recorded, or the last
 // `replayBytes` of a file no tail has recorded, so history is recorded once.
-// A big file is read in pieces of at most `MAX_READ`, over as many calls as it takes.
+// A big file is read in pieces of at most `MAX_READ`, over as many calls as it takes: a
+// megabyte is some ten milliseconds of parsing on the daemon's thread, so a transcript of
+// hundreds of megabytes met at a start is read a slice a tick, and `tailPace` tells the
+// sessions module a slice was cut short, so it ticks again soon instead of a poll later.
 
 import { closeSync, fstatSync, openSync, readSync, statSync } from "node:fs";
 
 /** The most a single `read()` takes in; the rest follows on the next calls. */
-const MAX_READ = 64 * 1024 * 1024;
+const MAX_READ = 1024 * 1024;
+
+/** Set by a read that left more of its file to read: the next tick comes at once. The sessions module clears it as a tick starts. */
+export const tailPace = { sliced: false };
 
 /** Only this much of a transcript that predates the attach is recorded as events; the rest feeds stats and intent. */
 export const REPLAY_BYTES = 256 * 1024;
@@ -184,6 +190,7 @@ export class Tail {
       const startOffset = this.partial.length > 0 ? this.partialStart : this.offset;
       const data = this.partial.length > 0 ? Buffer.concat([this.partial, chunk]) : chunk;
       this.offset += read;
+      if (this.offset < size) tailPace.sliced = true;
 
       const lines: TailLine[] = [];
       let lineStart = 0;

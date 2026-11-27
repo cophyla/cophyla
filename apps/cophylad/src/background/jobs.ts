@@ -12,6 +12,7 @@ import { hostEngine } from "../metrics/engine.ts";
 import type { MetricsEngine } from "../metrics/engine.ts";
 import { foldForRollup } from "../metrics/owners.ts";
 import type { WorkerSample } from "../metrics/worker-engine.ts";
+import { readSnapshot } from "../store/index.ts";
 import { spendBackfillJob } from "../usage/backfill-worker.ts";
 
 export interface JobContext {
@@ -120,7 +121,16 @@ function metricsDispose(_db: Database, args: { gpu: boolean }): null {
   return null;
 }
 
+/**
+ * A replication snapshot's tables, read in one transaction and answered as JSON text: the
+ * daemon sends it on as it is, never parsing it into objects or writing it out again.
+ */
+function replicaSnapshot(db: Database, args: { excludeKvNs: string[]; privateNodes: string[] }): string {
+  return db.transaction(() => JSON.stringify(readSnapshot(db, args.excludeKvNs, args.privateNodes)))();
+}
+
 export const JOBS: Record<string, Job> = {
+  "replica.snapshot": replicaSnapshot as Job,
   "metrics.compact": metricsCompact as Job,
   "metrics.sample": metricsSample as Job,
   "metrics.dispose": metricsDispose as Job,
