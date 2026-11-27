@@ -257,7 +257,7 @@ export class Metrics {
     try {
       this.deps.store.metrics.put(this.deps.nodeId, this.openMinute, row);
       if (++this.puts % PRUNE_EVERY === 0) {
-        const gone = this.deps.store.metrics.prune(this.now() - this.deps.config.retention_days * 86_400_000);
+        const gone = this.deps.store.metrics.prune(this.deps.nodeId, this.now() - this.deps.config.retention_days * 86_400_000);
         if (gone > 0) this.log.debug("metrics pruned", { rows: gone });
       }
     } catch (e) {

@@ -401,4 +401,38 @@ export const MIGRATIONS: string[] = [
   `
   CREATE INDEX messages_at ON messages(at);
   `,
+  // 16: nothing the daemon's thread asks walks a big table. The conversations sessions left as
+  // they were cleared, kept as each clear is recorded, so the spend backfill no longer reads
+  // every session event for them (filled from the old events once, in the background); the
+  // prose chunks still waiting for a vector, kept as chunks are written and emptied as vectors
+  // land, so the embed queue reads its next batch without walking every chunk (filled once, in
+  // the background); each minute's spend beside its rollup, so a range's sum reads no sample;
+  // and indexes for the questions that scanned: a conversation's spend rows, events by time,
+  // the backup's unacknowledged rows, the live sessions and the open threads. Small tables
+  // only: an index on session_events or chunks would hold a start for minutes.
+  `
+  CREATE TABLE session_clears (
+    native TEXT PRIMARY KEY,
+    session TEXT NOT NULL,
+    at INTEGER NOT NULL
+  );
+  CREATE TABLE embed_queue (
+    chunk INTEGER PRIMARY KEY REFERENCES chunks(id) ON DELETE CASCADE
+  );
+  CREATE TABLE metrics_spend (
+    node TEXT NOT NULL,
+    minute INTEGER NOT NULL,
+    profiles TEXT NOT NULL,
+    PRIMARY KEY (node, minute)
+  );
+  CREATE INDEX spend_conversation ON spend(conversation);
+  CREATE INDEX spend_conversations_last ON spend_conversations(last_at);
+  CREATE INDEX events_at ON events(at);
+  CREATE INDEX backup_sync_pending ON backup_sync(kind, key) WHERE synced = 0;
+  CREATE INDEX harness_sessions_live ON harness_sessions(last_activity, id) WHERE status != 'ended';
+  CREATE INDEX threads_open ON threads(started_at, id) WHERE ended_at IS NULL;
+  CREATE INDEX harness_sessions_ended ON harness_sessions(ended_at, id) WHERE status = 'ended';
+  -- a store with no events yet has no clears to read in
+  INSERT INTO meta (key, value) SELECT 'store.session_clears.v1', 'done' WHERE NOT EXISTS (SELECT 1 FROM session_events);
+  `,
 ];

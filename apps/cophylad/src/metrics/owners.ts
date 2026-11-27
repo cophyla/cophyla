@@ -49,7 +49,56 @@ export function assignOwners(processes: RawProcess[], roots: OwnerRoots): Map<nu
 
 /** Rows a sample carries: every owned process, and the top `keepOther` others by cpu, then memory. */
 export const LIVE_OTHERS = 10;
-export const ROLLUP_OTHERS = 5;
+/** The others a stored minute keeps: the busiest by cpu, and the busiest by memory. */
+export const ROLLUP_OTHERS = 20;
+
+/**
+ * A stored minute's rows. Cophyla's own processes (the platform's and the brain's) are kept one
+ * by one; a session's or a sidecar's tree, which holds everything run under it (a session's
+ * tools and servers, the shells of tether's terminals: hundreds of processes on a busy desk),
+ * is folded into one row for its owner, its cpu and memory summed under its root; of the rest,
+ * the `keepOther` busiest by cpu and the `keepOther` busiest by memory. The minute keeps every
+ * owner's share at a few kilobytes, where the whole tree was seventy.
+ */
+export function foldForRollup(list: SampleProcess[], keepOther = ROLLUP_OTHERS): SampleProcess[] {
+  const own: SampleProcess[] = [];
+  const groups = new Map<string, SampleProcess[]>();
+  const others: SampleProcess[] = [];
+  for (const p of list) {
+    const o = p.owner;
+    if (o.kind === "platform" || o.kind === "brain") own.push(p);
+    else if (o.kind === "other") others.push(p);
+    else {
+      const key = o.kind === "session" ? `session:${o.session}` : `sidecar:${o.name}`;
+      let g = groups.get(key);
+      if (!g) groups.set(key, (g = []));
+      g.push(p);
+    }
+  }
+  const folded: SampleProcess[] = [];
+  for (const g of groups.values()) {
+    if (g.length === 1) {
+      folded.push(g[0]!);
+      continue;
+    }
+    const pids = new Set(g.map((p) => p.pid));
+    const root = g.find((p) => !pids.has(p.parent)) ?? g[0]!;
+    const row: SampleProcess = { pid: root.pid, parent: root.parent, name: root.name, cpu: 0, memory: 0, owner: root.owner };
+    let vram: number | undefined;
+    for (const p of g) {
+      row.cpu += p.cpu;
+      row.memory += p.memory;
+      if (p.vram !== undefined) vram = (vram ?? 0) + p.vram;
+    }
+    row.cpu = Math.round(row.cpu * 10) / 10;
+    if (vram !== undefined) row.vram = vram;
+    folded.push(row);
+  }
+  const byCpu = [...others].sort((a, b) => b.cpu - a.cpu || b.memory - a.memory || a.pid - b.pid).slice(0, keepOther);
+  const byMemory = [...others].sort((a, b) => b.memory - a.memory || b.cpu - a.cpu || a.pid - b.pid).slice(0, keepOther);
+  const kept = new Set([...byCpu, ...byMemory]);
+  return [...own, ...folded, ...others.filter((p) => kept.has(p))];
+}
 
 export function trimProcesses(list: SampleProcess[], keepOther: number): SampleProcess[] {
   const owned = list.filter((p) => p.owner.kind !== "other");

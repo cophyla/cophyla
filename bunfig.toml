@@ -1,0 +1,3 @@
+[test]
+# the store's plan guard is strict under test: apps/cophylad/test/preload.ts
+preload = ["./apps/cophylad/test/preload.ts"]

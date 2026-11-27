@@ -89,7 +89,7 @@ export class Chunks {
       at: c.at,
       prose: c.prose ? 1 : 0,
     };
-    const existing = this.db.query("SELECT id, text FROM chunks WHERE key = $key").get({ key: c.key }) as { id: number; text: string } | null;
+    const existing = this.db.query("SELECT id, text, prose FROM chunks WHERE key = $key").get({ key: c.key }) as { id: number; text: string; prose: number } | null;
     if (!existing) {
       const r = this.db
         .query(
@@ -97,7 +97,9 @@ export class Chunks {
            VALUES ($key, $corpus, $thread, $message, $session, $seq, $memory, $line_from, $line_to, $tags, $kind, $at, $text, $prose)`,
         )
         .run({ ...cols, text: c.text });
-      return Number(r.lastInsertRowid);
+      const id = Number(r.lastInsertRowid);
+      if (c.prose) this.queue(id);
+      return id;
     }
     const same = existing.text === c.text;
     this.db
@@ -108,8 +110,20 @@ export class Chunks {
       )
       .run(same ? { ...cols, id: existing.id } : { ...cols, text: c.text, id: existing.id });
     if (!same) this.onStale?.(existing.id);
+    // A prose chunk whose text changed (its vector went with it, by the trigger) waits for a new one.
+    if (c.prose && (!same || existing.prose === 0)) this.queue(existing.id);
+    else if (!c.prose && existing.prose === 1) this.db.query("DELETE FROM embed_queue WHERE chunk = $id").run({ id: existing.id });
     return existing.id;
   }
+
+  /** Puts a prose chunk in the embed queue, once. */
+  private queue(id: number): void {
+    this.db.query("INSERT OR IGNORE INTO embed_queue (chunk) VALUES ($id)").run({ id });
+    this.onQueued?.();
+  }
+
+  /** Hears each chunk queued for a vector: the embed queue's nudge. */
+  onQueued?: () => void;
 
   /** The message's chunk; a message with no text loses its chunk. */
   putMessage(m: Message): void {
@@ -150,7 +164,7 @@ export class Chunks {
 
   /** Every chunk of one corpus: what a replica drops before it takes a snapshot's rows. */
   deleteCorpus(corpus: "thread" | "session" | "memory"): void {
-    this.deleteWhere("corpus = $corpus", { corpus });
+    this.deleteWhere("corpus = $corpus /* scan-ok: a replica's snapshot replaces the corpus */", { corpus });
   }
 
   /** Every chunk of one session's events: a workspace node's, purged. */
@@ -169,10 +183,11 @@ export class Chunks {
   }
 
   memoryNames(): string[] {
-    return (this.db.query("SELECT DISTINCT memory FROM chunks WHERE corpus = 'memory' ORDER BY memory").all() as { memory: string }[]).map((r) => r.memory);
+    // memory chunks alone have a name: the index on it, past its nulls, holds just them
+    return (this.db.query("SELECT DISTINCT memory FROM chunks WHERE memory IS NOT NULL ORDER BY memory").all() as { memory: string }[]).map((r) => r.memory);
   }
 
   count(): number {
-    return (this.db.query("SELECT COUNT(*) AS n FROM chunks").get() as { n: number }).n;
+    return (this.db.query("SELECT COUNT(*) AS n FROM chunks /* scan-ok: the tests' count */").get() as { n: number }).n;
   }
 }

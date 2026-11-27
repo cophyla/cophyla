@@ -16,7 +16,9 @@ import type { Logger } from "../../log.ts";
 import { backfill, reconcileMemory } from "./backfill.ts";
 import { Chunks } from "./chunks.ts";
 import type { Embedder } from "./embed.ts";
-import { EmbedQueue } from "./queue.ts";
+import { InlineBackground } from "../../background/client.ts";
+import type { Background } from "../../background/client.ts";
+import { EmbedQueue, fillQueue } from "./queue.ts";
 import type { RecallScope } from "./filters.ts";
 import { recall } from "./recall.ts";
 import { JsVectorIndex } from "./vectors.ts";
@@ -38,6 +40,8 @@ export interface IndexStart {
   log: Logger;
   /** Every memory file, for the reconcile by mtime. */
   memories?: () => Memory[];
+  /** Where the long reads go: the background worker; the store's own connection otherwise. */
+  background?: Background;
 }
 
 export class SearchIndex {
@@ -56,6 +60,7 @@ export class SearchIndex {
     this.db = db;
     this.privateNodes = privateNodes;
     this.chunks = new Chunks(db, (id) => this.vectors?.remove(id));
+    this.chunks.onQueued = () => this.kick();
   }
 
   /** The embedder in use, once loaded. */
@@ -96,6 +101,11 @@ export class SearchIndex {
       const pending = this.queue.pending();
       opts.log.info("vector index ready", { model: embedder.model, loaded, pending });
       if (pending > 0) this.queue.kick();
+      // the chunks written before the queue, or under another embedder: read in the background, queued here
+      const queue = this.queue;
+      await fillQueue(this.db, opts.background ?? new InlineBackground(this.db), embedder, { stopped: () => this.stopped, log: opts.log, onQueued: () => queue.kick() }).catch((e: unknown) =>
+        opts.log.warn("embed queue not filled", { error: e instanceof Error ? e.message : String(e) }),
+      );
     })();
     return this.starting;
   }

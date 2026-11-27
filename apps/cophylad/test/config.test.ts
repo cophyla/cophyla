@@ -42,7 +42,7 @@ describe("config", () => {
     });
     expect(c.tether).toEqual({ idle_exit_s: 600, window: "auto", window_on_start: false, profiles: true, on_path: true });
     expect(c.profiles).toEqual([]);
-    expect(c.store).toEqual({ embedding: "local", embed_batch: 8, embed_max_chars: 1536, vector_max_rows: 150000, backfill_batch: 200 });
+    expect(c.store).toEqual({ embedding: "local", embed_batch: 8, embed_max_chars: 1536, vector_max_rows: 150000, backfill_batch: 200, audit_retention_days: 90 });
     expect(c.editable).toEqual({ poll_ms: 10000 });
     expect(c.node.tz).toBeUndefined();
     // The phone listener and the microphone are both off until asked for: a fresh node does

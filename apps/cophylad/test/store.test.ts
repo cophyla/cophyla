@@ -433,7 +433,7 @@ describe("store: milestone 3 tables", () => {
     s.metrics.put(NODE, 120000, sample(120000, 9));
     expect(s.metrics.count(NODE)).toBe(3);
     expect(s.metrics.range(NODE).map((r) => r.cpu)).toEqual([1, 9, 3]);
-    expect(s.metrics.prune(150000)).toBe(2);
+    expect(s.metrics.prune(NODE, 150000)).toBe(2);
     expect(s.metrics.range(NODE).map((r) => r.cpu)).toEqual([3]);
     s.close();
   });

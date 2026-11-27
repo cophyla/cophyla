@@ -1,11 +1,12 @@
 // A minute's samples folded into one row of the same shape: cpu, memory and GPU averaged,
 // token counts and spend summed, processes averaged per pid (a process seen in some samples
-// only is averaged over the ones it was in, its owner and name the last seen) and trimmed to
-// the owned rows plus the five busiest others. `mergeHistory` joins stored rollups with the
+// only is averaged over the ones it was in, its owner and name the last seen) and folded as
+// a stored minute keeps them (`foldForRollup`): Cophyla's own processes one by one, each
+// session's and sidecar's tree as one row, and the busiest of the rest. `mergeHistory` joins stored rollups with the
 // ring's live samples for the open minute, so a history never shows a minute twice.
 
 import type { MetricsSample } from "@cophyla/protocol";
-import { ROLLUP_OTHERS, trimProcesses } from "./owners.ts";
+import { foldForRollup } from "./owners.ts";
 import type { SampleProcess } from "./owners.ts";
 
 export const MINUTE_MS = 60_000;
@@ -51,7 +52,7 @@ export function rollup(samples: MetricsSample[], node: string, minute: number): 
     at: minute,
     cpu: round1(avg((s) => s.cpu)),
     memory: { used: Math.round(avg((s) => s.memory.used)), total: Math.round(avg((s) => s.memory.total)) },
-    processes: trimProcesses(processes, ROLLUP_OTHERS),
+    processes: foldForRollup(processes),
     llm,
   };
   if (gpus.size > 0) out.gpu = [...gpus.values()].map((g) => ({ name: g.name, util: round1(g.util / g.n), vramUsed: Math.round(g.vramUsed / g.n), vramTotal: g.vramTotal }));

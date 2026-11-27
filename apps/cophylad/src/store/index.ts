@@ -9,8 +9,9 @@
 // here leaves them, recall answers the machine without them, and `purgePartition` takes
 // them away, leaving its sessions' ids as tombstones.
 
-import { Database } from "bun:sqlite";
 import type { Ask, AuditEntry, Decision, Message, MetricsSample, NodeRecord, Outcome, Principal, ReplicaSnapshot, ReplicaTable, ReplicaWrite, Session, SessionEvent, SessionStatus, Task, TaskStatus, Thread, UsageDimension, Workspace } from "@cophyla/protocol";
+import { CLEARS_FILLED } from "./clears.ts";
+import { GuardedDatabase } from "./guard.ts";
 import { SearchIndex } from "./index/index.ts";
 import { MIGRATIONS } from "./migrations.ts";
 
@@ -191,8 +192,15 @@ interface ThreadSpendDbRow {
   last_at: number;
 }
 
+/** The main connection's page cache, in KiB: the hot pages of an 11 GB store, not SQLite's 2 MB default. */
+export const MAIN_CACHE_KIB = 32 * 1024;
+/** A worker connection's page cache, in KiB. */
+export const WORKER_CACHE_KIB = 8 * 1024;
+/** What the WAL is cut back to after a checkpoint, in bytes. */
+export const JOURNAL_LIMIT = 64 * 1024 * 1024;
+
 export class Store {
-  readonly db: Database;
+  readonly db: GuardedDatabase;
   /** The recall index: chunks written alongside messages and session events, memory on request. */
   readonly index: SearchIndex;
   /** Hears every write to a primary-only table; silent while a replica write is being applied. */
@@ -201,13 +209,34 @@ export class Store {
   private applying = false;
   /** The workspace nodes' ids, now and once: rows of theirs never leave the machine. */
   privateNodes: () => readonly string[] = () => [];
+  /** The acknowledged backup bytes, summed once and then kept by `backupSync`'s writes. */
+  private backupBytes?: number;
 
   constructor(path: string) {
-    this.db = new Database(path, { create: true, strict: true });
+    this.db = new GuardedDatabase(path, { create: true, strict: true });
     this.db.exec("PRAGMA journal_mode = WAL");
+    // WAL makes NORMAL safe: a commit can be lost to a power cut, never the store to corruption.
+    this.db.exec("PRAGMA synchronous = NORMAL");
     this.db.exec("PRAGMA foreign_keys = ON");
     this.db.exec("PRAGMA busy_timeout = 5000");
+    this.db.exec(`PRAGMA cache_size = -${MAIN_CACHE_KIB}`);
+    this.db.exec(`PRAGMA journal_size_limit = ${JOURNAL_LIMIT}`);
+    this.db.exec("PRAGMA analysis_limit = 400");
     this.index = new SearchIndex(this.db, () => this.privateNodes());
+  }
+
+  /** Brings the planner's statistics up to date, bounded by `analysis_limit`: at open and hourly. */
+  optimize(): void {
+    this.db.exec("PRAGMA optimize = 0x10002");
+  }
+
+  /**
+   * Who checkpoints the WAL: the connection itself after each commit that grows it past a
+   * thousand pages (SQLite's own way, for a store with no background worker), or the background
+   * worker, which runs passive checkpoints so a commit on this thread never does one.
+   */
+  checkpointBy(who: "self" | "worker"): void {
+    this.db.exec(`PRAGMA wal_autocheckpoint = ${who === "self" ? 1000 : 0}`);
   }
 
   private isPrivate(node: string | undefined): boolean {
@@ -217,13 +246,19 @@ export class Store {
   /** Applies the migrations past `user_version`, each in its own transaction. */
   migrate(): number {
     let version = (this.db.query("PRAGMA user_version").get() as { user_version: number }).user_version;
-    for (let i = version; i < MIGRATIONS.length; i++) {
-      const apply = this.db.transaction(() => {
-        this.db.exec(MIGRATIONS[i]!);
-        this.db.exec(`PRAGMA user_version = ${i + 1}`);
-      });
-      apply();
-      version = i + 1;
+    this.db.paused = true;
+    try {
+      for (let i = version; i < MIGRATIONS.length; i++) {
+        const apply = this.db.transaction(() => {
+          this.db.exec(MIGRATIONS[i]!);
+          this.db.exec(`PRAGMA user_version = ${i + 1}`);
+        });
+        apply();
+        version = i + 1;
+      }
+    } finally {
+      this.db.paused = false;
+      this.db.schemaChanged();
     }
     return version;
   }
@@ -299,8 +334,10 @@ export class Store {
     },
     /** Every row outside the named namespaces, for a snapshot. */
     dump: (excludeNs: string[] = []): KvRow[] => {
-      const rows = this.db.query("SELECT ns, key, value, updated_at FROM kv ORDER BY ns, key").all() as { ns: string; key: string; value: string; updated_at: number }[];
-      return rows.filter((r) => !excludeNs.includes(r.ns)).map((r) => ({ ns: r.ns, key: r.key, value: JSON.parse(r.value) as unknown, updatedAt: r.updated_at }));
+      const rows = this.db
+        .query("SELECT ns, key, value, updated_at FROM kv WHERE ns NOT IN (SELECT value FROM json_each($exclude)) ORDER BY ns, key /* scan-ok: a snapshot's whole read, on the background worker in production */")
+        .all({ exclude: JSON.stringify(excludeNs) }) as { ns: string; key: string; value: string; updated_at: number }[];
+      return rows.map((r) => ({ ns: r.ns, key: r.key, value: JSON.parse(r.value) as unknown, updatedAt: r.updated_at }));
     },
   };
 
@@ -375,7 +412,10 @@ export class Store {
         .all({ ...names, since, limit }) as AuditRow[];
       return rows.map(auditFromRow);
     },
-    count: (): number => (this.db.query("SELECT COUNT(*) AS n FROM audit").get() as { n: number }).n,
+    count: (): number => (this.db.query("SELECT COUNT(*) AS n FROM audit /* scan-ok: the tests' count */").get() as { n: number }).n,
+    /** Drops up to `batch` of the oldest rows from before `before`, by the index on time; how many went. */
+    prune: (before: number, batch: number): number =>
+      Number(this.db.query("DELETE FROM audit WHERE rowid IN (SELECT rowid FROM audit WHERE at < $before ORDER BY at LIMIT $batch)").run({ before, batch }).changes),
   };
 
   // --- asks -------------------------------------------------------------------------------
@@ -485,7 +525,7 @@ export class Store {
         where.push(`status IN (${filter.status.map((_, i) => `$status${i}`).join(", ")})`);
         filter.status.forEach((s, i) => (params[`status${i}`] = s));
       }
-      const sql = `SELECT * FROM harness_sessions${where.length ? " WHERE " + where.join(" AND ") : ""} ORDER BY last_activity DESC, id DESC`;
+      const sql = `SELECT * FROM harness_sessions${where.length ? " WHERE " + where.join(" AND ") : ""} ORDER BY last_activity DESC, id DESC /* scan-ok: the registry by any filter, a row per session ever, hundreds */`;
       return (this.db.query(sql).all(params) as SessionRow[]).map(sessionFromRow);
     },
     /** The profiles the user's own sessions of a harness ran under on a node, the latest started first. */
@@ -496,7 +536,7 @@ export class Store {
       return rows.map((r) => r.profile);
     },
     listLive: (): Session[] => {
-      const rows = this.db.query("SELECT * FROM harness_sessions WHERE status != 'ended' ORDER BY last_activity DESC, id DESC").all() as SessionRow[];
+      const rows = this.db.query("SELECT * FROM harness_sessions INDEXED BY harness_sessions_live WHERE status != 'ended' ORDER BY last_activity DESC, id DESC").all() as SessionRow[];
       return rows.map(sessionFromRow);
     },
     /**
@@ -509,7 +549,7 @@ export class Store {
         .query(
           `SELECT * FROM (
              SELECT s.*, (SELECT json_extract(e.payload, '$.reason') FROM session_events e WHERE e.session = s.id AND e.kind = 'ended' ORDER BY e.seq DESC LIMIT 1) AS end_reason
-             FROM harness_sessions s WHERE s.status = 'ended' AND s.ended_at >= $since AND s.role IS NULL
+             FROM harness_sessions s INDEXED BY harness_sessions_ended WHERE s.status = 'ended' AND s.ended_at >= $since AND s.role IS NULL
            ) WHERE end_reason IS NULL OR end_reason NOT IN ('spare', 'backgrounded')
            ORDER BY ended_at DESC, id DESC LIMIT $limit`,
         )
@@ -552,10 +592,12 @@ export class Store {
         const out: SessionEvent = { session: input.session, seq: next.seq, at: input.at, kind: input.kind, payload: input.payload };
         if (input.raw !== undefined) out.raw = input.raw;
         this.index.chunks.putEvent(out);
+        // A clear is kept apart as well: the conversation the session left, which the spend ledger asks after.
+        const cleared = input.kind === "notification" ? (input.payload as { type?: unknown; from?: unknown } | null) : null;
+        if (cleared?.type === "context_cleared" && typeof cleared.from === "string") this.spend.putClear(cleared.from, input.session, input.at);
         return out;
       });
       const out = tx(e);
-      this.index.kick();
       return out;
     },
     /**
@@ -675,14 +717,14 @@ export class Store {
         .run(threadParams(t));
     },
     /** Every thread, oldest first, for a snapshot. */
-    dump: (): Thread[] => (this.db.query("SELECT * FROM threads ORDER BY started_at, id").all() as ThreadRow[]).map(threadFromRow),
+    dump: (): Thread[] => (this.db.query("SELECT * FROM threads ORDER BY started_at, id /* scan-ok: a snapshot's whole read, on the background worker in production */").all() as ThreadRow[]).map(threadFromRow),
     get: (id: string): Thread | undefined => {
       const row = this.db.query("SELECT * FROM threads WHERE id = $id").get({ id }) as ThreadRow | null;
       return row ? threadFromRow(row) : undefined;
     },
     /** The newest thread still open. */
     latestOpen: (): Thread | undefined => {
-      const row = this.db.query("SELECT * FROM threads WHERE ended_at IS NULL ORDER BY started_at DESC, id DESC LIMIT 1").get() as ThreadRow | null;
+      const row = this.db.query("SELECT * FROM threads INDEXED BY threads_open WHERE ended_at IS NULL ORDER BY started_at DESC, id DESC LIMIT 1").get() as ThreadRow | null;
       return row ? threadFromRow(row) : undefined;
     },
     list: (filter: ThreadListFilter = {}): Thread[] => {
@@ -728,7 +770,6 @@ export class Store {
           .run(messageParams(m));
         this.index.chunks.putMessage(m);
       })();
-      this.index.kick();
       this.wrote("messages", "upsert", m);
     },
     update: (m: Message): void => {
@@ -736,7 +777,6 @@ export class Store {
         this.db.query("UPDATE messages SET thread = $thread, at = $at, role = $role, source = $source, content = $content, streaming = $streaming, steps = $steps WHERE id = $id").run(messageParams(m));
         this.index.chunks.putMessage(m);
       })();
-      this.index.kick();
       this.wrote("messages", "upsert", m);
     },
     /** Inserts or replaces the whole row with its chunk; the replica's way in. */
@@ -750,10 +790,9 @@ export class Store {
           .run(messageParams(m));
         this.index.chunks.putMessage(m);
       })();
-      this.index.kick();
     },
     /** Every message, oldest first, for a snapshot. */
-    dump: (): Message[] => (this.db.query("SELECT * FROM messages ORDER BY at, id").all() as MessageRow[]).map(messageFromRow),
+    dump: (): Message[] => (this.db.query("SELECT * FROM messages ORDER BY at, id /* scan-ok: a snapshot's whole read, on the background worker in production */").all() as MessageRow[]).map(messageFromRow),
     /**
      * The newest `limit` messages across every thread said before `before` (a message's id; the
      * newest when absent), oldest first, and whether older ones remain. A `before` that is no
@@ -842,7 +881,7 @@ export class Store {
         .run(taskParams(t));
     },
     /** Every task, oldest first, for a snapshot. */
-    dump: (): Task[] => (this.db.query("SELECT * FROM tasks ORDER BY created_at, id").all() as TaskRow[]).map(taskFromRow),
+    dump: (): Task[] => (this.db.query("SELECT * FROM tasks ORDER BY created_at, id /* scan-ok: a snapshot's whole read */").all() as TaskRow[]).map(taskFromRow),
     get: (id: string): Task | undefined => {
       const row = this.db.query("SELECT * FROM tasks WHERE id = $id").get({ id }) as TaskRow | null;
       return row ? taskFromRow(row) : undefined;
@@ -910,12 +949,19 @@ export class Store {
         .map((r) => ({ name: r.name, node: r.node, at: r.at, payload: JSON.parse(r.payload) as unknown }))
         .reverse();
     },
-    /** Keeps the newest `keep` rows; returns how many went. */
-    prune: (keep: number): number => {
-      const r = this.db.query("DELETE FROM events WHERE id NOT IN (SELECT id FROM events ORDER BY at DESC, id DESC LIMIT $keep)").run({ keep });
+    /**
+     * Keeps the newest `keep` rows, dropping at most `batch` of the older ones a call; returns how
+     * many went. The newest kept row is found by walking `keep` steps down the index by time.
+     */
+    prune: (keep: number, batch = 1000): number => {
+      const edge = this.db.query("SELECT at, id FROM events ORDER BY at DESC, id DESC LIMIT 1 OFFSET $keep").get({ keep }) as { at: number; id: number } | null;
+      if (!edge) return 0;
+      const r = this.db
+        .query("DELETE FROM events WHERE id IN (SELECT id FROM events WHERE at <= $at AND (at < $at OR id <= $id) ORDER BY at LIMIT $batch)")
+        .run({ at: edge.at, id: edge.id, batch });
       return Number(r.changes);
     },
-    count: (): number => (this.db.query("SELECT COUNT(*) AS n FROM events").get() as { n: number }).n,
+    count: (): number => (this.db.query("SELECT COUNT(*) AS n FROM events /* scan-ok: a test's and a diagnostic's count, of rows kept to ten thousand */").get() as { n: number }).n,
   };
 
   // --- metrics: per-minute rollups ---------------------------------------------------------
@@ -923,7 +969,22 @@ export class Store {
   readonly metrics = {
     /** Stores a minute's rollup; a second put for the same minute replaces it. */
     put: (node: string, minute: number, sample: MetricsSample): void => {
-      this.db.query("INSERT INTO metrics (node, minute, sample) VALUES ($node, $minute, $sample) ON CONFLICT(node, minute) DO UPDATE SET sample = excluded.sample").run({ node, minute, sample: json(sample) });
+      this.db.transaction(() => {
+        this.db.query("INSERT INTO metrics (node, minute, sample) VALUES ($node, $minute, $sample) ON CONFLICT(node, minute) DO UPDATE SET sample = excluded.sample").run({ node, minute, sample: json(sample) });
+        // the minute's spend, beside it: what a range's sum reads, never the samples
+        if (sample.profiles && Object.keys(sample.profiles).length > 0) this.metrics.putSpend(node, minute, sample.profiles);
+        else this.db.query("DELETE FROM metrics_spend WHERE node = $node AND minute = $minute").run({ node, minute });
+      })();
+    },
+    /** A minute's per-profile spend, kept apart from its rollup. */
+    putSpend: (node: string, minute: number, profiles: NonNullable<MetricsSample["profiles"]>): void => {
+      this.db
+        .query("INSERT INTO metrics_spend (node, minute, profiles) VALUES ($node, $minute, $profiles) ON CONFLICT(node, minute) DO UPDATE SET profiles = excluded.profiles")
+        .run({ node, minute, profiles: json(profiles) });
+    },
+    /** Replaces a stored rollup's sample, its spend left as it is: the compaction's write. */
+    replace: (node: string, minute: number, sample: string): void => {
+      this.db.query("UPDATE metrics SET sample = $sample WHERE node = $node AND minute = $minute").run({ node, minute, sample });
     },
     /** The rollups of one node within `[from, to]` (minute starts, epoch ms), oldest first, at most `limit`. */
     range: (node: string, opts: { from?: number; to?: number; limit?: number } = {}): MetricsSample[] => {
@@ -935,7 +996,7 @@ export class Store {
     /** The per-profile spend of each rollup of one node within `[from, to]` that has any, oldest first: only that field is read out of the row. */
     profiles: (node: string, opts: { from?: number; to?: number } = {}): { minute: number; profiles: NonNullable<MetricsSample["profiles"]> }[] => {
       const rows = this.db
-        .query("SELECT minute, json_extract(sample, '$.profiles') AS profiles FROM metrics WHERE node = $node AND minute >= $from AND minute <= $to AND json_extract(sample, '$.profiles') IS NOT NULL ORDER BY minute")
+        .query("SELECT minute, profiles FROM metrics_spend WHERE node = $node AND minute >= $from AND minute <= $to ORDER BY minute")
         .all({ node, from: opts.from ?? 0, to: opts.to ?? Number.MAX_SAFE_INTEGER }) as { minute: number; profiles: string }[];
       return rows.map((r) => ({ minute: r.minute, profiles: JSON.parse(r.profiles) as NonNullable<MetricsSample["profiles"]> }));
     },
@@ -944,11 +1005,14 @@ export class Store {
       const rows = this.db.query("SELECT sample FROM metrics WHERE node = $node ORDER BY minute DESC LIMIT $limit").all({ node, limit }) as { sample: string }[];
       return rows.map((r) => JSON.parse(r.sample) as MetricsSample).reverse();
     },
-    /** Drops every rollup before `before`; returns how many went. */
-    prune: (before: number): number => Number(this.db.query("DELETE FROM metrics WHERE minute < $before").run({ before }).changes),
+    /** Drops one node's rollups before `before`, and their spend; returns how many went. */
+    prune: (node: string, before: number): number => {
+      this.db.query("DELETE FROM metrics_spend WHERE node = $node AND minute < $before").run({ node, before });
+      return Number(this.db.query("DELETE FROM metrics WHERE node = $node AND minute < $before").run({ node, before }).changes);
+    },
     count: (node?: string): number =>
       node === undefined
-        ? (this.db.query("SELECT COUNT(*) AS n FROM metrics").get() as { n: number }).n
+        ? (this.db.query("SELECT COUNT(*) AS n FROM metrics /* scan-ok: the tests' count, of the retention's minutes */").get() as { n: number }).n
         : (this.db.query("SELECT COUNT(*) AS n FROM metrics WHERE node = $node").get({ node }) as { n: number }).n,
   };
 
@@ -1064,32 +1128,26 @@ export class Store {
         for (const [key, offset] of marks) mark.run({ key, offset });
       })();
     },
-    /** Every mark, by key: what the backfill's reader is handed. */
-    allMarks: (): Record<string, number> => {
-      const out: Record<string, number> = {};
-      for (const r of this.db.query("SELECT key, offset FROM spend_marks").all() as { key: string; offset: number }[]) out[r.key] = r.offset;
-      return out;
-    },
     /**
-     * The conversations a session left behind as it was cleared, each to the session: a
-     * session's row names only the conversation it is in now, its timeline each one it left.
+     * The session a conversation was left by as it was cleared: a session's row names only the
+     * conversation it is in now, `session_clears` each one it left (kept as each clear is
+     * recorded, and filled from the older events once by `fillClears`).
      */
-    clearedFrom: (): Map<string, string> => {
-      const out = new Map<string, string>();
-      const rows = this.db.query("SELECT session, payload FROM session_events WHERE kind = 'notification' AND payload LIKE '%context_cleared%'").all() as { session: string; payload: string }[];
-      for (const r of rows) {
-        try {
-          const p = JSON.parse(r.payload) as { type?: string; from?: unknown };
-          if (p.type === "context_cleared" && typeof p.from === "string") out.set(p.from, r.session);
-        } catch {
-          // a payload that is not JSON names nothing
-        }
-      }
-      return out;
+    clearedSession: (native: string): string | undefined => {
+      const row = this.db.query("SELECT session FROM session_clears WHERE native = $native").get({ native }) as { session: string } | null;
+      return row?.session;
     },
+    /** Records a conversation a session left as it was cleared; the latest clear of it wins. */
+    putClear: (native: string, session: string, at: number): void => {
+      this.db
+        .query("INSERT INTO session_clears (native, session, at) VALUES ($native, $session, $at) ON CONFLICT(native) DO UPDATE SET session = excluded.session, at = excluded.at WHERE excluded.at >= session_clears.at")
+        .run({ native, session, at });
+    },
+    /** Whether the clears recorded before `session_clears` existed have all been read into it. */
+    clearsFilled: (): boolean => this.meta.get(CLEARS_FILLED) === "done",
     /** Every conversation the ledger holds. */
     conversations: (): SpendConversation[] => {
-      const rows = this.db.query("SELECT * FROM spend_conversations").all() as { conversation: string; harness: string; session: string | null; profile: string; cwd: string; title: string | null; first_at: number; last_at: number }[];
+      const rows = this.db.query("SELECT * FROM spend_conversations /* scan-ok: the usage page's names, a row per conversation of the retention */").all() as { conversation: string; harness: string; session: string | null; profile: string; cwd: string; title: string | null; first_at: number; last_at: number }[];
       return rows.map((r) => ({ conversation: r.conversation, harness: r.harness, ...(r.session ? { session: r.session } : {}), profile: r.profile, cwd: r.cwd, ...(r.title ? { title: r.title } : {}), firstAt: r.first_at, lastAt: r.last_at }));
     },
     /** The rows of a query summed. */
@@ -1150,7 +1208,9 @@ export class Store {
     /** Drops the hours before `before`, and the conversations left with none; the marks stay, so nothing is counted in again. */
     prune: (before: number): number => {
       const n = this.db.query("DELETE FROM spend WHERE hour < $before").run({ before }).changes;
-      this.db.query("DELETE FROM spend_conversations WHERE last_at < $before AND conversation NOT IN (SELECT DISTINCT conversation FROM spend)").run({ before });
+      this.db
+        .query("DELETE FROM spend_conversations WHERE last_at < $before AND NOT EXISTS (SELECT 1 FROM spend s WHERE s.conversation = spend_conversations.conversation)")
+        .run({ before });
       return n;
     },
   };
@@ -1163,21 +1223,33 @@ export class Store {
       return r ? backupSyncFromRow(r) : undefined;
     },
     put: (row: BackupSyncRow): void => {
+      const was = this.backupBytes !== undefined ? this.backupSync.get(row.kind, row.key) : undefined;
       this.db
         .query(
           `INSERT INTO backup_sync (kind, key, id, version, hash, synced, size) VALUES ($kind, $key, $id, $version, $hash, $synced, $size)
            ON CONFLICT(kind, key) DO UPDATE SET id = excluded.id, version = excluded.version, hash = excluded.hash, synced = excluded.synced, size = excluded.size`,
         )
         .run({ kind: row.kind, key: row.key, id: row.id, version: row.version, hash: row.hash, synced: row.synced ? 1 : 0, size: row.size });
+      if (this.backupBytes !== undefined) this.backupBytes += (row.synced ? row.size : 0) - (was?.synced ? was.size : 0);
     },
-    delete: (kind: string, key: string): boolean => this.db.query("DELETE FROM backup_sync WHERE kind = $kind AND key = $key").run({ kind, key }).changes > 0,
-    list: (): BackupSyncRow[] => (this.db.query("SELECT * FROM backup_sync ORDER BY kind, key").all() as BackupSyncDbRow[]).map(backupSyncFromRow),
-    /** The rows the server has not acknowledged. */
+    delete: (kind: string, key: string): boolean => {
+      const was = this.backupBytes !== undefined ? this.backupSync.get(kind, key) : undefined;
+      const gone = this.db.query("DELETE FROM backup_sync WHERE kind = $kind AND key = $key").run({ kind, key }).changes > 0;
+      if (gone && was?.synced && this.backupBytes !== undefined) this.backupBytes -= was.size;
+      return gone;
+    },
+    /** Every row: the reconcile's, which reads it on the background worker in production. */
+    list: (): BackupSyncRow[] => (this.db.query("SELECT * FROM backup_sync ORDER BY kind, key /* scan-ok: the reconcile's whole read, on the background worker */").all() as BackupSyncDbRow[]).map(backupSyncFromRow),
+    /** The rows the server has not acknowledged: the few the partial index holds. */
     pending: (): number => (this.db.query("SELECT COUNT(*) AS n FROM backup_sync WHERE synced = 0").get() as { n: number }).n,
-    /** The ciphertext bytes the server holds, as acknowledged. */
-    bytes: (): number => (this.db.query("SELECT COALESCE(SUM(size), 0) AS n FROM backup_sync WHERE synced = 1").get() as { n: number }).n,
+    /** The ciphertext bytes the server holds, as acknowledged: summed once, then kept as rows change. */
+    bytes: (): number => {
+      this.backupBytes ??= (this.db.query("SELECT COALESCE(SUM(size), 0) AS n FROM backup_sync WHERE synced = 1 /* scan-ok: once a run, then kept */").get() as { n: number }).n;
+      return this.backupBytes;
+    },
     clear: (): void => {
       this.db.query("DELETE FROM backup_sync").run();
+      this.backupBytes = 0;
     },
   };
 
@@ -1279,15 +1351,16 @@ export class Store {
     try {
       this.db.transaction(() => {
         this.index.chunks.deleteCorpus("thread");
-        this.db.exec("DELETE FROM messages");
-        this.db.exec("DELETE FROM threads");
+        // a replica takes a snapshot whole: the tables it replaces go whole
+        this.db.exec("DELETE FROM messages /* scan-ok: a replica's snapshot replaces them all */");
+        this.db.exec("DELETE FROM threads /* scan-ok: a replica's snapshot replaces them all */");
         this.db.exec("DELETE FROM tasks");
         // this node's own workspaces stay, and so do its workspace nodes', which no snapshot holds
         const kept = [opts.selfNode, ...this.privateNodes()];
         this.db.query(`DELETE FROM workspaces WHERE node NOT IN (${kept.map((_, i) => `$n${i}`).join(", ")})`).run(Object.fromEntries(kept.map((n, i) => [`n${i}`, n])));
         const keep = opts.keepKvNs;
-        if (keep.length === 0) this.db.exec("DELETE FROM kv");
-        else this.db.query(`DELETE FROM kv WHERE ns NOT IN (${keep.map((_, i) => `$ns${i}`).join(", ")})`).run(Object.fromEntries(keep.map((ns, i) => [`ns${i}`, ns])));
+        if (keep.length === 0) this.db.exec("DELETE FROM kv /* scan-ok: a replica's snapshot replaces it */");
+        else this.db.query(`DELETE FROM kv WHERE ns NOT IN (${keep.map((_, i) => `$ns${i}`).join(", ")}) /* scan-ok: a replica's snapshot replaces it */`).run(Object.fromEntries(keep.map((ns, i) => [`ns${i}`, ns])));
         for (const t of snapshot.tables.threads as Thread[]) this.threads.upsert(t);
         for (const m of snapshot.tables.messages as Message[]) this.messages.upsert(m);
         for (const t of snapshot.tables.tasks as Task[]) this.tasks.upsert(t);
@@ -1333,8 +1406,8 @@ export class Store {
         events += this.db.query("DELETE FROM session_events WHERE session = $id").run({ id }).changes;
         this.db.query("DELETE FROM transcript_tails WHERE session = $id").run({ id });
       }
-      const asks = this.db.query("DELETE FROM asks WHERE node = $node").run({ node }).changes;
-      const audit = this.db.query("DELETE FROM audit WHERE node = $node").run({ node }).changes;
+      const asks = this.db.query("DELETE FROM asks WHERE node = $node /* scan-ok: a workspace node removed, its asks gone with it */").run({ node }).changes;
+      const audit = this.db.query("DELETE FROM audit WHERE node = $node /* scan-ok: a workspace node removed: once in its life, and its rows must go with it */").run({ node }).changes;
       const workspaces = this.db.query("DELETE FROM workspaces WHERE node = $node").run({ node }).changes;
       this.db
         .query(

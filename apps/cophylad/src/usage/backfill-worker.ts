@@ -1,5 +1,5 @@
-// The spend backfill's reader, in a worker so the daemon's own thread is never held by it:
-// finds the Claude transcripts written within the retention under the folders it is given,
+// The spend backfill's reader, run as the background worker's `spend.backfill` job so the
+// daemon's own thread is never held by it: finds the Claude transcripts written within the retention under the folders it is given,
 // oldest first, and reads each conversation (its own transcript, then its sub-agents') with
 // the sessions' own parser, counting into the ledger only what is past the marks it was given.
 // A line that cannot count is skipped unread: a tool's result unless it launched a sub-agent,
@@ -9,7 +9,7 @@
 
 import { closeSync, openSync, readdirSync, readSync, realpathSync, statSync } from "node:fs";
 import { basename, join } from "node:path";
-import { isMainThread } from "node:worker_threads";
+import type { Database } from "bun:sqlite";
 import { Pricer } from "../metrics/prices.ts";
 import type { Price } from "../metrics/prices.ts";
 import { subagentInfo, subagentTranscripts } from "../sessions/claude/subagents.ts";
@@ -263,13 +263,14 @@ export function run(req: BackfillRequest, post: (m: BackfillMessage) => void): v
   post({ kind: "end", read, skipped, failed });
 }
 
-declare const self: Worker;
-if (!isMainThread) {
-  self.onmessage = (ev: MessageEvent<BackfillRequest>) => {
-    try {
-      run(ev.data, (m) => self.postMessage(m));
-    } catch (e) {
-      self.postMessage({ kind: "error", message: e instanceof Error ? e.message : String(e) } satisfies BackfillMessage);
-    }
-  };
+/** The background worker's job: the ledger's marks read on its own connection, then a whole run, each message a part. */
+export function spendBackfillJob(db: Database, req: Omit<BackfillRequest, "marks">, ctx: { part(p: unknown): void }): null {
+  const marks: Record<string, number> = {};
+  for (const r of db.query("SELECT key, offset FROM spend_marks /* scan-ok: the background worker's read */").all() as { key: string; offset: number }[]) marks[r.key] = r.offset;
+  try {
+    run({ ...req, marks }, (m) => ctx.part(m));
+  } catch (e) {
+    ctx.part({ kind: "error", message: e instanceof Error ? e.message : String(e) } satisfies BackfillMessage);
+  }
+  return null;
 }

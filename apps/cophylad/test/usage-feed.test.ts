@@ -7,10 +7,14 @@
 // the last cost record's side spend, the run skipping what has not grown and what is claimed.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ClaudeAdapter } from "../src/sessions/claude/adapter.ts";
 import { transcriptPathFor } from "../src/sessions/claude/registry.ts";
+import { InlineBackground, WorkerBackground } from "../src/background/client.ts";
+import type { Background } from "../src/background/client.ts";
+import { silentLogger } from "../src/log.ts";
 import { Store } from "../src/store/index.ts";
 import { SpendBackfill } from "../src/usage/backfill.ts";
 import { readConversation, run } from "../src/usage/backfill-worker.ts";
@@ -226,11 +230,11 @@ describe("the spend backfill", () => {
     const backfill = new SpendBackfill({
       ledger,
       store,
+      background: new InlineBackground(store.db),
       claudeDirs: () => [claudeDir],
       session: () => undefined,
       prices: Object.entries(PRICES).map(([k, v]) => [k, { input: v[0]!, output: v[1]!, cache_read: v[2]!, cache_write: v[3]!, cache_write_1h: v[4]! }]),
       retentionDays: 3650,
-      delayMs: 0,
     });
     expect(await backfill.run()).toEqual({ read: 2, skipped: 0, failed: 0 });
     const conv = store.spend.conversations().find((c) => c.conversation === "claude:conv-a")!;
@@ -240,59 +244,51 @@ describe("the spend backfill", () => {
     expect(ledger.filling).toBe(false);
   });
 
-  // Bun on Windows never frees a terminated worker, so a worker a run grew the daemon by about 80 MB an hour.
-  const backfillWith = (makeWorker: () => Worker) => {
+  const backfillWith = (background: (store: Store) => Background) => {
     const store = new Store(":memory:");
     store.migrate();
     const ledger = new SpendLedger({ store, price, retentionDays: 3650 });
-    return new SpendBackfill({ ledger, store, claudeDirs: () => [claudeDir], session: () => undefined, prices: [], retentionDays: 3650, delayMs: 0, makeWorker });
+    return { store, backfill: new SpendBackfill({ ledger, store, background: background(store), claudeDirs: () => [claudeDir], session: () => undefined, prices: [], retentionDays: 3650 }) };
   };
 
-  test("one worker reads for every run; a new one only once the backfill stopped", async () => {
-    let made = 0;
-    const backfill = backfillWith(() => {
-      made++;
-      return new Worker(new URL("../src/usage/backfill-worker.ts", import.meta.url).href);
-    });
-    await backfill.run();
-    await backfill.run();
-    await backfill.run();
-    expect(made).toBe(1);
-    backfill.stop();
-    await backfill.run();
-    expect(made).toBe(2);
-    backfill.stop();
+  test("on the background worker: the reads and the marks are its own, the writes the daemon's", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cophyla-test-spend-"));
+    const path = join(dir, "s.sqlite");
+    const store = new Store(path);
+    store.migrate();
+    const ledger = new SpendLedger({ store, price, retentionDays: 3650 });
+    const background = new WorkerBackground({ path, cacheKib: 1024, log: silentLogger });
+    const backfill = new SpendBackfill({ ledger, store, background, claudeDirs: () => [claudeDir], session: () => undefined, prices: [], retentionDays: 3650 });
+    try {
+      expect(await backfill.run()).toEqual({ read: 2, skipped: 0, failed: 0 });
+      // the marks it wrote are what the worker reads next: nothing new
+      expect(await backfill.run()).toEqual({ read: 0, skipped: 2, failed: 0 });
+    } finally {
+      await background.stop();
+      store.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
-  /** A stand-in worker: it answers each request as `answer` says. */
-  const fakeWorker = (answer: "end" | "error" | "break", counts: { terminated: number }) => {
-    const w = {
-      onmessage: null as ((ev: MessageEvent<BackfillMessage>) => void) | null,
-      onerror: null as ((ev: ErrorEvent) => void) | null,
-      postMessage() {
-        setTimeout(() => {
-          if (answer === "break") w.onerror?.({ message: "the worker fell over" } as ErrorEvent);
-          else w.onmessage?.({ data: answer === "end" ? { kind: "end", read: 0, skipped: 0, failed: 0 } : { kind: "error", message: "a transcript would not read" } } as MessageEvent<BackfillMessage>);
-        }, 1);
-      },
-      terminate() {
-        counts.terminated++;
-      },
-    };
-    return w as unknown as Worker;
-  };
+  test("a run waits for the clears recorded before the ledger knew them", async () => {
+    const { store, backfill } = backfillWith((s) => new InlineBackground(s.db));
+    store.meta.set("store.session_clears.v1", "filling");
+    expect(await backfill.run()).toEqual({ read: 0, skipped: 0, failed: 0, waiting: true });
+    store.meta.set("store.session_clears.v1", "done");
+    expect((await backfill.run()).read).toBe(2);
+  });
 
-  test("a worker that broke is ended and a fresh one reads the next run; one that caught its error is kept", async () => {
-    const counts = { terminated: 0 };
-    // the first worker breaks; the one made after it reports an error it caught, every time
-    const kinds: ("error" | "break")[] = ["break", "error"];
-    let made = 0;
-    const backfill = backfillWith(() => fakeWorker(kinds[made++]!, counts));
-    await expect(backfill.run()).rejects.toThrow("the worker fell over");
-    expect(counts.terminated).toBe(1);
-    await expect(backfill.run()).rejects.toThrow("a transcript would not read");
-    await expect(backfill.run()).rejects.toThrow("a transcript would not read");
-    expect(made).toBe(2);
-    expect(counts.terminated).toBe(1);
+  test("a worker that failed fails the run; one that caught its error says what", async () => {
+    const broke: Background = { threaded: true, call: () => Promise.reject(new Error("the worker fell over")), stop: async () => {} };
+    await expect(backfillWith(() => broke).backfill.run()).rejects.toThrow("the worker fell over");
+    const caught: Background = {
+      threaded: true,
+      call: async (_job, _args, opts) => {
+        opts?.onPart?.({ kind: "error", message: "a transcript would not read" } satisfies BackfillMessage);
+        return null as never;
+      },
+      stop: async () => {},
+    };
+    await expect(backfillWith(() => caught).backfill.run()).rejects.toThrow("a transcript would not read");
   });
 });

@@ -52,7 +52,7 @@ export async function backfill(deps: BackfillDeps): Promise<boolean> {
     if (deps.stopped()) return false;
     const rows = db
       .query(
-        `SELECT m.* FROM messages m WHERE NOT EXISTS (SELECT 1 FROM chunks c WHERE c.key = 'msg:' || m.id)
+        `SELECT m.* FROM messages m /* scan-ok: the one-time sweep, marked done in meta */ WHERE NOT EXISTS (SELECT 1 FROM chunks c WHERE c.key = 'msg:' || m.id)
          AND m.streaming = 0 ORDER BY m.at DESC, m.id DESC LIMIT $limit`,
       )
       .all({ limit: batch }) as MessageRow[];
@@ -72,7 +72,7 @@ export async function backfill(deps: BackfillDeps): Promise<boolean> {
     if (deps.stopped()) return false;
     const rows = db
       .query(
-        `SELECT e.session, e.seq, e.at, e.kind, e.payload FROM session_events e
+        `SELECT e.session, e.seq, e.at, e.kind, e.payload FROM session_events e /* scan-ok: the one-time sweep, marked done in meta */
          WHERE NOT EXISTS (SELECT 1 FROM chunks c WHERE c.key = 'ev:' || e.session || ':' || e.seq)
          ORDER BY e.at DESC, e.seq DESC LIMIT $limit`,
       )

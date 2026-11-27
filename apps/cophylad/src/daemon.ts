@@ -68,6 +68,10 @@ import type { Logger } from "./log.ts";
 import type { LoginEnvNote } from "./login-env.ts";
 import { hostEngine } from "./metrics/engine.ts";
 import type { MetricsEngine } from "./metrics/engine.ts";
+import { workerEngine } from "./metrics/worker-engine.ts";
+import { InlineBackground, WorkerBackground } from "./background/client.ts";
+import type { Background } from "./background/client.ts";
+import { Maintenance } from "./background/maintenance.ts";
 import { Metrics } from "./metrics/index.ts";
 import { PlanLimits } from "./metrics/limits.ts";
 import { conversationSpend } from "./metrics/conversation.ts";
@@ -168,7 +172,7 @@ import type { NodeTerminals } from "./nodes/terminals.ts";
 import { Push } from "./push/index.ts";
 import { Sidecars } from "./sidecars/index.ts";
 import { TtsPy } from "./sidecars/tts-py.ts";
-import { Store } from "./store/index.ts";
+import { Store, WORKER_CACHE_KIB } from "./store/index.ts";
 import { loadEmbedder } from "./store/index/embed.ts";
 import type { Embedder } from "./store/index/embed.ts";
 import { Tasks } from "./tasks/index.ts";
@@ -430,8 +434,14 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
   if (process.platform === "win32") log.info(spawnsGuarded() ? "spawns sealed: no child inherits the daemon's handles" : "spawns not sealed: a child may inherit the daemon's handles");
 
   const store = new Store(p.db);
+  store.db.log = log.child("store");
   const version = store.migrate();
-  log.info("store open", { path: p.db, schema: version });
+  const optimizeAt = performance.now();
+  store.optimize();
+  log.info("store open", { path: p.db, schema: version, optimizeMs: Math.round(performance.now() - optimizeAt) });
+  // The long reads, the passive checkpoints and the machine's process list, off this thread: a
+  // worker with its own connection, made once and kept. A store with no file has none.
+  const background: Background = p.db === ":memory:" ? new InlineBackground(store.db, log.child("background")) : new WorkerBackground({ path: p.db, cacheKib: WORKER_CACHE_KIB, log: log.child("background") });
   if (opts.loginEnv) {
     const { shellPath: _shellPath, ...note } = opts.loginEnv;
     log.info("the login environment taken", note);
@@ -459,6 +469,9 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
   if (config.nodes.token !== undefined) log.warn("[nodes] token is ignored: each node holds a grant of its own now; it can be removed from config.toml");
 
   const bus = new Bus();
+  // The store's upkeep and the other background jobs, paced on this thread (background/scheduler.ts).
+  const maintenance = new Maintenance({ store, background, bus, nodeId: identity.id, log: log.child("background"), auditRetentionDays: config.store.audit_retention_days, onClearsFilled: () => maintenance.scheduler.trigger("spend.backfill") });
+  maintenance.start();
   // `sessions` is built below; only a session's own events ask for its node.
   bus.partitions = { isPrivate: (node) => owners.isPrivate(node), sessionNode: (id) => sessions.getAny(id)?.node };
   const policy = new Policy(config.gate, store);
@@ -607,7 +620,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
   // read marks no terminal, and the raiser walks the tree its own way.
   let processEngine: MetricsEngine | undefined;
   const processes = async () => {
-    processEngine ??= hostEngine({ gpu: false, log: sessionsLog.child("processes") });
+    processEngine ??= background.threaded ? workerEngine(background, { gpu: false }) : hostEngine({ gpu: false, log: sessionsLog.child("processes") });
     return (await processEngine.sample()).processes;
   };
   // A session in tmux is raised through the client attached to it, which may be in an editor's
@@ -828,7 +841,13 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     store,
     bus,
     log: metricsLog,
-    engine: opts.metrics?.engine ?? (config.metrics.enabled ? hostEngine({ gpu: config.metrics.gpu && env["NODE_ENV"] !== "test", log: metricsLog }) :{ name: "off", sample: () => ({ at: Date.now(), monoNs: 0n, cores: 1, cpu: { busyNs: 0, totalNs: 0 }, memory: { used: 0, total: 0 }, processes: [] }) }),
+    engine:
+      opts.metrics?.engine ??
+      (config.metrics.enabled
+        ? background.threaded
+          ? workerEngine(background, { gpu: config.metrics.gpu && env["NODE_ENV"] !== "test" })
+          : hostEngine({ gpu: config.metrics.gpu && env["NODE_ENV"] !== "test", log: metricsLog })
+        : { name: "off", sample: () => ({ at: Date.now(), monoNs: 0n, cores: 1, cpu: { busyNs: 0, totalNs: 0 }, memory: { used: 0, total: 0 }, processes: [] }) }),
     // every partition's sessions are owned; the workspace nodes' are then kept from the machine's audience
     sessions: { pids: () => sessions.pidsAll(), list: () => sessions.list() },
     partitions: { sessionNode: (id) => sessions.getAny(id)?.node, isPrivate: (node) => owners.isPrivate(node) },
@@ -2305,8 +2324,19 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
           prices: [...prices],
           retentionDays: config.metrics.spend_retention_days,
           log: log.child("usage"),
+          background,
         });
-  spendBackfill?.start();
+  if (spendBackfill) {
+    maintenance.scheduler.add({
+      name: "spend.backfill",
+      class: "spend",
+      delayMs: 30_000,
+      everyMs: 3_600_000,
+      run: async () => {
+        await spendBackfill.run();
+      },
+    });
+  }
   if (tether?.available && config.tether.profiles) {
     void writeEntryPoints({ tether, profiles, dataDir: p.data, editorsDir: join(p.home, "editors"), log: sessionsLog.child("tether") });
   }
@@ -2381,7 +2411,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
         : config.store.embedding === "server"
           ? cloud.embedder()
           : loadEmbedder(config.store.embedding_model ?? DEFAULT_MODEL_DIR, indexLog);
-  void store.index.start({ ...(embedder ? { embedder } : {}), config: config.store, log: indexLog, memories: () => memory.all() });
+  void store.index.start({ ...(embedder ? { embedder } : {}), config: config.store, log: indexLog, memories: () => memory.all(), background });
   // a hosted embedder's queue stops while the link is down: the next link-up drains it
   if (config.store.embedding === "server") cloud.onUp(() => store.index.kick());
 
@@ -2532,7 +2562,6 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
       stopRecorder();
       events.dispose();
       offProfiles();
-      spendBackfill?.stop();
       await sessions.stop();
       processEngine?.dispose?.();
       await terminalStreams?.stop();
@@ -2544,7 +2573,10 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
       tasks.dispose();
       workspaces.dispose();
       asks.dispose();
+      await maintenance.stop();
       await store.index.stop();
+      // the worker's connection closes before this thread's
+      await background.stop();
       store.close();
       log.info("cophylad stopped");
     },

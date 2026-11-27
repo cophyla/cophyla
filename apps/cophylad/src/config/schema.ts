@@ -347,6 +347,8 @@ export const StoreConfig = z.object({
   vector_max_rows: z.number().int().positive().default(150000),
   /** Rows per batch when indexing what the store held before the index existed. */
   backfill_batch: z.number().int().positive().default(200),
+  /** Days of the audit kept: every request with its decision and result; older rows are dropped a batch at a time. */
+  audit_retention_days: z.number().int().positive().default(90),
 });
 export type StoreConfig = z.infer<typeof StoreConfig>;
 
@@ -991,6 +993,7 @@ embed_batch = 8                # chunks per model call
 embed_max_chars = 1536         # characters of a chunk the model reads
 vector_max_rows = 150000       # vectors kept in memory, newest first
 backfill_batch = 200           # rows per batch when indexing what the store held before the index
+audit_retention_days = 90      # days of the audit kept
 
 # The editable layer: tools/, hooks/, views/, prompts/ and memory/ are watched; the poll catches what the watcher misses.
 [editable]
