@@ -37,8 +37,6 @@ export const BACKFILL_SLEEP_MS = 50;
 /** What the queue was last filled for: the embedder's model, and whether it was the account's. */
 export const QUEUE_FILLED_KEY = "index.embed_queue.v1";
 const QUEUE_FILL_AT_KEY = "index.embed_queue.v1.at";
-/** Chunk ids a fill call reads in one go. */
-const FILL_SPAN = 50_000;
 
 /** The key a queue is filled for. */
 export const queueKey = (embedder: Embedder): string => `${embedder.model}${embedder.hosted ? "@hosted" : ""}`;
@@ -68,15 +66,14 @@ export async function fillQueue(db: Database, background: Background, embedder: 
   let queued = 0;
   while (after < max) {
     if (opts.stopped()) return queued;
-    const to = Math.min(max, after + FILL_SPAN);
-    const ids = await background.call<number[]>("embed.missing", { model: embedder.model, after, to });
+    const { ids, reached } = await background.call<{ ids: number[]; reached: number }>("embed.missing", { model: embedder.model, after, to: max });
     if (opts.stopped()) return queued;
     db.transaction(() => {
       for (const id of ids) queued += insert.run({ id }).changes;
-      setMeta(QUEUE_FILL_AT_KEY, String(to));
+      setMeta(QUEUE_FILL_AT_KEY, String(reached));
     })();
     if (ids.length > 0) opts.onQueued?.();
-    after = to;
+    after = reached;
   }
   setMeta(QUEUE_FILLED_KEY, key);
   if (queued > 0) opts.log.info("embed queue filled", { model: embedder.model, chunks: queued, ms: Math.round(performance.now() - started) });

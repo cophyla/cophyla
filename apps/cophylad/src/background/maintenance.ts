@@ -116,7 +116,8 @@ export class Maintenance {
 
   private async checkpoint(ctx: JobContext): Promise<void> {
     try {
-      await ctx.read("checkpoint");
+      // beside the reads, never behind a long job: the WAL waits on it
+      await ctx.read("checkpoint", undefined, { class: "read" });
       this.checkpointFailures = 0;
     } catch (e) {
       if (++this.checkpointFailures === CHECKPOINT_FAILURES) {

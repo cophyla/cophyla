@@ -11,7 +11,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { MetricsSample } from "@cophyla/protocol";
-import { InlineBackground, WorkerBackground } from "../src/background/client.ts";
+import { InlineBackground, LanedBackground, WorkerBackground } from "../src/background/client.ts";
 import type { CompactedMinute } from "../src/background/jobs.ts";
 import { Maintenance } from "../src/background/maintenance.ts";
 import { Bus } from "../src/bus.ts";
@@ -102,6 +102,41 @@ describe("the background worker", () => {
       await bg.stop();
       t.store.close();
       t.done();
+    }
+  });
+
+  test("a read is answered while a long bulk job runs: each kind has a worker of its own, made at its first call", async () => {
+    const made: string[] = [];
+    // a worker whose "slow" job holds it a while, as a long fill holds the real one
+    const fake = (lane: string) => {
+      made.push(lane);
+      let busyUntil = 0;
+      const w = {
+        onmessage: null as ((ev: MessageEvent) => void) | null,
+        onerror: null as ((ev: ErrorEvent) => void) | null,
+        postMessage(m: { kind: string; id?: number; job?: string }) {
+          if (m.kind === "init") setTimeout(() => w.onmessage?.({ data: { kind: "ready" } } as MessageEvent), 1);
+          else if (m.kind === "call") {
+            const start = Math.max(Date.now(), busyUntil);
+            busyUntil = start + (m.job === "slow" ? 400 : 1);
+            setTimeout(() => w.onmessage?.({ data: { kind: "done", id: m.id, result: m.job } } as MessageEvent), busyUntil - Date.now());
+          } else if (m.kind === "stop") setTimeout(() => w.onmessage?.({ data: { kind: "stopped" } } as MessageEvent), 1);
+        },
+        terminate() {},
+      };
+      return w as unknown as Worker;
+    };
+    const bg = new LanedBackground({ path: "unused", cacheKib: 1024, log: silentLogger, makeWorker: fake });
+    try {
+      const slow = bg.call<string>("slow");
+      await new Promise((r) => setTimeout(r, 20));
+      const at = performance.now();
+      expect(await bg.call<string>("quick", undefined, { class: "read" })).toBe("quick");
+      expect(performance.now() - at).toBeLessThan(200);
+      expect(await slow).toBe("slow");
+      expect(made).toEqual(["bulk", "read"]);
+    } finally {
+      await bg.stop();
     }
   });
 });

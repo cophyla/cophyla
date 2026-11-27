@@ -70,7 +70,7 @@ import type { LoginEnvNote } from "./login-env.ts";
 import { hostEngine } from "./metrics/engine.ts";
 import type { MetricsEngine } from "./metrics/engine.ts";
 import { workerEngine } from "./metrics/worker-engine.ts";
-import { InlineBackground, WorkerBackground } from "./background/client.ts";
+import { InlineBackground, LanedBackground } from "./background/client.ts";
 import type { Background } from "./background/client.ts";
 import { Maintenance } from "./background/maintenance.ts";
 import { Metrics } from "./metrics/index.ts";
@@ -455,7 +455,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
   // worker with its own connection, made once and kept. A store with no file has none.
   // A test's daemon runs them inline unless it asks: Bun on Windows never frees a worker, and a suite starts hundreds of daemons.
   const threaded = p.db !== ":memory:" && (opts.backgroundWorker ?? startEnv["NODE_ENV"] !== "test");
-  const background: Background = threaded ? new WorkerBackground({ path: p.db, cacheKib: WORKER_CACHE_KIB, log: log.child("background") }) : new InlineBackground(store.db, log.child("background"));
+  const background: Background = threaded ? new LanedBackground({ path: p.db, cacheKib: WORKER_CACHE_KIB, log: log.child("background") }) : new InlineBackground(store.db, log.child("background"));
   if (opts.loginEnv) {
     const { shellPath: _shellPath, ...note } = opts.loginEnv;
     log.info("the login environment taken", note);

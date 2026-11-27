@@ -44,32 +44,65 @@ export interface ClearRow {
 }
 
 /**
- * The clears recorded in one rowid range of session_events: each `context_cleared`
- * notification's conversation left, to its session. What `session_clears` is filled from once.
+ * How long one call of a fill reads before it answers how far it got: a few hundred
+ * milliseconds, read in statements of a few dozen rows, each its own read transaction, so none
+ * lasts long enough to hold the WAL back, and the next call goes on from there.
  */
-function clearsScan(db: Database, args: { after: number; to: number }): ClearRow[] {
-  const rows = db
-    .query("SELECT session, at, payload FROM session_events WHERE rowid > $after AND rowid <= $to AND kind = 'notification' ORDER BY rowid")
-    .all({ after: args.after, to: args.to }) as { session: string; at: number; payload: string }[];
-  const out: ClearRow[] = [];
-  for (const r of rows) {
-    if (!r.payload.includes("context_cleared")) continue;
-    try {
-      const p = JSON.parse(r.payload) as { type?: string; from?: unknown };
-      if (p.type === "context_cleared" && typeof p.from === "string") out.push({ native: p.from, session: r.session, at: r.at });
-    } catch {
-      // a payload that is not JSON names nothing
+const FILL_CALL_MS = 250;
+const FILL_ROWS = 64;
+
+/**
+ * The clears recorded in session_events past `after` and up to `to`, as far as one call reads:
+ * each `context_cleared` notification's conversation left, to its session, and the rowid
+ * reached. What `session_clears` is filled from once.
+ */
+function clearsScan(db: Database, args: { after: number; to: number }): { clears: ClearRow[]; reached: number } {
+  const until = performance.now() + FILL_CALL_MS;
+  // the kinds first, a few rows at a time; a notification's payload after
+  const kinds = db.query("SELECT rowid AS id, kind FROM session_events WHERE rowid > $after AND rowid <= $to ORDER BY rowid LIMIT $n");
+  const payload = db.query("SELECT session, at, payload FROM session_events WHERE rowid = $id");
+  const clears: ClearRow[] = [];
+  let reached = args.after;
+  while (reached < args.to && performance.now() < until) {
+    const rows = kinds.all({ after: reached, to: args.to, n: FILL_ROWS }) as { id: number; kind: string }[];
+    if (rows.length === 0) {
+      reached = args.to;
+      break;
     }
+    for (const r of rows) {
+      if (r.kind !== "notification") continue;
+      const row = payload.get({ id: r.id }) as { session: string; at: number; payload: string } | null;
+      if (!row || !row.payload.includes("context_cleared")) continue;
+      try {
+        const p = JSON.parse(row.payload) as { type?: string; from?: unknown };
+        if (p.type === "context_cleared" && typeof p.from === "string") clears.push({ native: p.from, session: row.session, at: row.at });
+      } catch {
+        // a payload that is not JSON names nothing
+      }
+    }
+    reached = rows[rows.length - 1]!.id;
   }
-  return out;
+  return { clears, reached };
 }
 
-/** The prose chunks in an id range with no vector for `model`: what the embed queue is filled from once. */
-function embedMissing(db: Database, args: { model: string; after: number; to: number }): number[] {
-  const rows = db
-    .query("SELECT c.id AS id FROM chunks c WHERE c.id > $after AND c.id <= $to AND c.prose = 1 AND NOT EXISTS (SELECT 1 FROM chunk_vectors v WHERE v.chunk = c.id AND v.model = $model) ORDER BY c.id")
-    .all({ model: args.model, after: args.after, to: args.to }) as { id: number }[];
-  return rows.map((r) => r.id);
+/** The prose chunks past `after` and up to `to` with no vector for `model`, as far as one call reads, and the id reached: what the embed queue is filled from once. */
+function embedMissing(db: Database, args: { model: string; after: number; to: number }): { ids: number[]; reached: number } {
+  const until = performance.now() + FILL_CALL_MS;
+  const batch = db.query(
+    "SELECT c.id AS id, c.prose = 1 AND NOT EXISTS (SELECT 1 FROM chunk_vectors v WHERE v.chunk = c.id AND v.model = $model) AS missing FROM chunks c WHERE c.id > $after AND c.id <= $to ORDER BY c.id LIMIT $n",
+  );
+  const ids: number[] = [];
+  let reached = args.after;
+  while (reached < args.to && performance.now() < until) {
+    const rows = batch.all({ model: args.model, after: reached, to: args.to, n: FILL_ROWS * 4 }) as { id: number; missing: number }[];
+    if (rows.length === 0) {
+      reached = args.to;
+      break;
+    }
+    for (const r of rows) if (r.missing) ids.push(r.id);
+    reached = rows[rows.length - 1]!.id;
+  }
+  return { ids, reached };
 }
 
 export interface CompactedMinute {

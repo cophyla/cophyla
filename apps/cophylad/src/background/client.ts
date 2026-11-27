@@ -27,6 +27,8 @@ export interface Background {
 
 /** Breaks a few times an hour, and the worker is given up on: the jobs fail until the daemon restarts. */
 const RESTARTS_PER_HOUR = 5;
+/** How long a stop waits for the worker to close its connection. */
+const STOP_WAIT_MS = 5000;
 
 interface Pending {
   resolve(v: unknown): void;
@@ -116,14 +118,14 @@ export class WorkerBackground implements Background {
     });
   }
 
-  /** Closes the worker's connection, then ends it; a worker that does not answer within a second is ended anyway. */
+  /** Closes the worker's connection, then ends it; a worker that does not answer in `STOP_WAIT_MS` (busy in a long read, on a loaded machine) is ended anyway, its connection then left to the process's end. */
   async stop(): Promise<void> {
     if (this.stopped) return;
     this.stopped = true;
     const worker = this.worker;
     if (!worker) return;
     await new Promise<void>((resolve) => {
-      const t = setTimeout(resolve, 1000);
+      const t = setTimeout(resolve, STOP_WAIT_MS);
       const prev = worker.onmessage;
       worker.onmessage = (ev: MessageEvent<FromWorker>) => {
         if (ev.data.kind === "stopped") {
@@ -137,6 +139,33 @@ export class WorkerBackground implements Background {
     this.worker = undefined;
     for (const p of this.pending.values()) p.reject(new Error("the background worker stopped"));
     this.pending.clear();
+  }
+}
+
+/**
+ * Two workers, each made at its first call: one for the reads something waits on (`read`: a
+ * sample of the machine, a command line, a snapshot, a checkpoint) and one for the long jobs
+ * (`bulk`: the fills, the spend backfill, the cloud reconcile), so a read never waits behind
+ * minutes of bulk work, which a worker cannot set aside once it is in it.
+ */
+export class LanedBackground implements Background {
+  readonly threaded = true;
+  private readonly lanes: Record<JobClass, WorkerBackground>;
+
+  constructor(opts: { path: string; cacheKib: number; log: Logger; makeWorker?: (lane: JobClass) => Worker }) {
+    const lane = (name: JobClass) => {
+      const make = opts.makeWorker;
+      return new WorkerBackground({ path: opts.path, cacheKib: opts.cacheKib, log: opts.log, ...(make ? { makeWorker: () => make(name) } : {}) });
+    };
+    this.lanes = { read: lane("read"), bulk: lane("bulk") };
+  }
+
+  call<T>(job: string, args?: unknown, opts: CallOptions = {}): Promise<T> {
+    return this.lanes[opts.class ?? "bulk"].call<T>(job, args, opts);
+  }
+
+  async stop(): Promise<void> {
+    await Promise.all([this.lanes.read.stop(), this.lanes.bulk.stop()]);
   }
 }
 
