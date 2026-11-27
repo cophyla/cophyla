@@ -10,7 +10,7 @@
 // A script past 16 KiB is no wrapper and is not read.
 
 import { readdirSync, readFileSync, statSync } from "node:fs";
-import { basename, extname, isAbsolute, join, resolve } from "node:path";
+import { basename, extname, isAbsolute, join, posix, resolve, win32 } from "node:path";
 
 /** A wrapper found: the account directory it sets, the name it gives the profile, and the script. */
 export interface ClaudeWrapper {
@@ -55,13 +55,17 @@ export function expandWrapperPath(raw: string, env: Record<string, string | unde
   s = s.replace(/\$\{([A-Za-z0-9_]+)\}|\$([A-Za-z0-9_]+)/g, (_m, a: string | undefined, b: string | undefined) => take((a ?? b)!));
   if (unknown) return undefined;
   if (s === "~" || s.startsWith("~/") || s.startsWith("~\\")) s = join(home, s.slice(1));
-  return isAbsolute(s) ? resolve(s) : undefined;
+  // a path as the platform the script is for reads it, whichever this is
+  const p = platform === "win32" ? win32 : posix;
+  return p.isAbsolute(s) ? p.resolve(s) : undefined;
 }
 
 /** The profile's name a wrapper gives: its own name past `claude-`, else the directory's. */
 export function wrapperName(script: string, dir: string): string {
-  const m = NAME.exec(basename(script));
-  return m?.[1]?.trim() || basename(dir) || "wrapper";
+  // the last part of either kind of path, a Windows one read anywhere
+  const leaf = (p: string) => p.split(/[\\/]/).filter(Boolean).pop() ?? "";
+  const m = NAME.exec(leaf(script));
+  return m?.[1]?.trim() || leaf(dir) || "wrapper";
 }
 
 function mtimeOf(path: string): number | undefined {

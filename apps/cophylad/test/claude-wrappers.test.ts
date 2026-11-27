@@ -59,7 +59,8 @@ describe("the wrappers found", () => {
     return { home, bin, links, ferit, work, env, wrappers: new ClaudeWrappers({ env, home, platform: process.platform }) };
   }
 
-  test("a claude-<name> script on PATH or in WinGet's Links folder names the account it sets; others name none", () => {
+  // cmd scripts with %USERPROFILE% and WinGet's folder: what Windows alone reads
+  test.skipIf(process.platform !== "win32")("a claude-<name> script on PATH or in WinGet's Links folder names the account it sets; others name none", () => {
     const t = setup();
     writeFileSync(join(t.links, "claude-ferit.cmd"), '@echo off\r\nsetlocal\r\nset "CLAUDE_CONFIG_DIR=%USERPROFILE%\\.claude-ferit"\r\nclaude.exe %*\r\n');
     writeFileSync(join(t.bin, "claude-work.ps1"), "$env:CLAUDE_CONFIG_DIR = '" + t.work + "'\nclaude @args\n");
