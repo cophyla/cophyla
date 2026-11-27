@@ -7,37 +7,34 @@
 // macOS delegate grants every origin every device, camera included, so its method is replaced
 // there, once for the class, as `dropped/macos.rs` does with the drop. Audio may start with no click first (WebView2's
 // autoplay flag, in main.rs). And the talk key: a shortcut held anywhere on the desktop is
-// push-to-talk, told to the host page as `voice:ptt {down}` when it goes down and when it
-// comes up; the page names the shortcut (`ptt_shortcut`) from what the user chose, Ctrl+Alt+Space
+// push-to-talk, told to the host page as `voice:ptt {down, at}` when it goes down and when it
+// comes up, `at` when the user did it (talkkey.rs keeps that timeline); the page names the
+// shortcut (`ptt_shortcut`) from what the user chose, Ctrl+Alt+Space
 // (Ctrl+Shift+Space on a Mac, where Control+Option+Space switches the input source) unless they
 // chose another, since it keeps the settings.
 
 use std::sync::Mutex;
 
-use serde::Serialize;
-use tauri::{AppHandle, Emitter, Runtime, State, WebviewWindow};
+use tauri::{AppHandle, Runtime, State, WebviewWindow};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
-use crate::cophylad::HOST_LABEL;
-
-/// The event the host page hears the talk key on.
-pub const EVENT_PTT: &str = "voice:ptt";
-
-#[derive(Clone, Serialize)]
-struct Ptt {
-    down: bool,
-}
+use crate::talkkey::{self, Input};
 
 /// The shortcut registered now, if any.
 #[derive(Default)]
 pub struct TalkKey(Mutex<Option<Shortcut>>);
 
-/// The global-shortcut plugin, with the talk key's going down and coming up sent to the host page.
+/// The global-shortcut plugin, with the talk key's going down and coming up handed to its
+/// timeline (talkkey.rs), which tells the host page. On Windows a press is handled on the UI
+/// thread, a release on the plugin's poller.
 pub fn plugin<R: Runtime>() -> tauri::plugin::TauriPlugin<R> {
     tauri_plugin_global_shortcut::Builder::new()
-        .with_handler(|app, _shortcut, event| {
-            let down = event.state() == ShortcutState::Pressed;
-            let _ = app.emit_to(HOST_LABEL, EVENT_PTT, Ptt { down });
+        .with_handler(|_app, _shortcut, event| match event.state() {
+            ShortcutState::Pressed => {
+                let _task = crate::uiwatch::task("talk key");
+                talkkey::input(Input::Pressed(talkkey::press_time()));
+            }
+            ShortcutState::Released => talkkey::input(Input::Released(talkkey::now_ms())),
         })
         .build()
 }
@@ -59,6 +56,7 @@ pub fn ptt_shortcut<R: Runtime>(app: AppHandle<R>, key: State<'_, TalkKey>, acce
     }
     let shortcuts = app.global_shortcut();
     if let Some(old) = current.take() {
+        talkkey::set(None);
         if let Err(e) = shortcuts.unregister(old) {
             log::warn!("talk key {}: {e}", old.into_string());
         }
@@ -66,6 +64,7 @@ pub fn ptt_shortcut<R: Runtime>(app: AppHandle<R>, key: State<'_, TalkKey>, acce
     if let Some(new) = parsed {
         shortcuts.register(new).map_err(|e| format!("unavailable: {wanted} could not be had, another app may hold it: {e}"))?;
         log::info!("talk key {}", new.into_string());
+        talkkey::set(Some(&new));
         *current = Some(new);
     }
     Ok(wanted.to_string())

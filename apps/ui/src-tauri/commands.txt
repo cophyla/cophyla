@@ -22,3 +22,4 @@ ptt_shortcut
 media_open
 media_close
 media_stats
+app_log

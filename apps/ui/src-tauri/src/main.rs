@@ -10,8 +10,16 @@
 // page hears the wake words and the talk key, and speaks the replies (voice.rs).
 // Installed, it runs from a version directory behind the launcher and relaunches through
 // it when a newer version waits. See apps/ui/README.md.
+//
+// The UI thread carries no traffic of the link and no call that waits on the system: the
+// page's link goes over its own socket (page.rs), batched as events and commands when that is
+// not open, notifications go through a thread of their own (notify.rs), commands that do work
+// are async, and a watchdog logs the UI thread's stalls with what it last began (uiwatch.rs),
+// in the app's rotated log (applog.rs). On Windows the process asks to be left out of EcoQoS,
+// which would slow it down while it sits in the tray.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod applog;
 mod commands;
 mod docframe;
 mod dropped;
@@ -22,8 +30,11 @@ mod media;
 mod memory;
 mod notify;
 mod cophylad;
+mod page;
 mod stream;
+mod talkkey;
 mod tray;
+mod uiwatch;
 mod views;
 mod voice;
 mod webtab;
@@ -70,6 +81,46 @@ fn caption_color<R: Runtime>(window: &tauri::WebviewWindow<R>) {
     // SAFETY: the handle is this window's, and the attribute reads one COLORREF from `color`.
     if let Err(e) = unsafe { DwmSetWindowAttribute(HWND(hwnd.0), DWMWA_CAPTION_COLOR, (&raw const color).cast(), size) } {
         log::debug!("caption colour: {e}");
+    }
+}
+
+/// Asks Windows to run the process at full speed, out of EcoQoS (the efficiency mode it gives
+/// a background app on its own), so a hidden app's talk key, link and UI thread are not slowed
+/// down under load. Nothing elsewhere.
+fn high_qos() {
+    #[cfg(windows)]
+    {
+        use windows::Win32::System::Threading::{GetCurrentProcess, ProcessPowerThrottling, SetProcessInformation, PROCESS_POWER_THROTTLING_CURRENT_VERSION, PROCESS_POWER_THROTTLING_EXECUTION_SPEED, PROCESS_POWER_THROTTLING_STATE};
+        // the execution speed taken in hand (ControlMask) and not throttled (StateMask 0)
+        let state = PROCESS_POWER_THROTTLING_STATE { Version: PROCESS_POWER_THROTTLING_CURRENT_VERSION, ControlMask: PROCESS_POWER_THROTTLING_EXECUTION_SPEED, StateMask: 0 };
+        let size = std::mem::size_of::<PROCESS_POWER_THROTTLING_STATE>() as u32;
+        // SAFETY: this process's own pseudo-handle, and a state of the size given.
+        if let Err(e) = unsafe { SetProcessInformation(GetCurrentProcess(), ProcessPowerThrottling, (&raw const state).cast(), size) } {
+            log::warn!("the process stays under EcoQoS: {e}");
+        }
+    }
+}
+
+/// A run loop event's name for the UI thread's watchdog; none for what every turn of the loop says.
+fn run_event_label(event: &RunEvent) -> Option<&'static str> {
+    Some(match event {
+        RunEvent::MainEventsCleared => return None,
+        RunEvent::WindowEvent { .. } => "window event",
+        RunEvent::WebviewEvent { .. } => "web view event",
+        RunEvent::MenuEvent(_) => "menu",
+        RunEvent::TrayIconEvent(_) => "tray icon",
+        RunEvent::ExitRequested { .. } => "exit requested",
+        RunEvent::Ready => "ready",
+        _ => "run loop event",
+    })
+}
+
+/// The app's commands, each labelled for the watchdog as it arrives: every command arrives on the
+/// UI thread, and a sync one runs there.
+fn labelled<R: Runtime>(commands: impl Fn(tauri::ipc::Invoke<R>) -> bool + Send + Sync + 'static) -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Send + Sync + 'static {
+    move |invoke| {
+        let _task = uiwatch::named("command", invoke.message.command());
+        commands(invoke)
     }
 }
 
@@ -142,7 +193,8 @@ mod app_menu {
 }
 
 fn main() {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    applog::init();
+    high_qos();
     // Before any window: the id a toast is attributed to belongs to the process.
     notify::set_process_aumid();
     let hidden = std::env::args().skip(1).any(|a| a == HIDDEN_FLAG);
@@ -163,8 +215,10 @@ fn main() {
         .manage(views::Staged::default())
         .register_uri_scheme_protocol(views::SCHEME, views::handle)
         .register_uri_scheme_protocol(docframe::SCHEME, docframe::handle)
-        .invoke_handler(tauri::generate_handler![commands::cophylad_attach, commands::cophylad_send, commands::view_stage, commands::notify_ask, commands::dismiss_ask, commands::user_idle_ms, dropped::dropped_paths, stream::stream_open, stream::stream_embed, stream::stream_place, stream::stream_close, webtab::webtab_open, webtab::webtab_place, webtab::webtab_go, webtab::webtab_close, links::open_link, voice::ptt_shortcut, media::media_open, media::media_close, media::media_stats])
+        .invoke_handler(labelled(tauri::generate_handler![commands::cophylad_attach, commands::cophylad_send, commands::view_stage, commands::notify_ask, commands::dismiss_ask, commands::user_idle_ms, dropped::dropped_paths, stream::stream_open, stream::stream_embed, stream::stream_place, stream::stream_close, webtab::webtab_open, webtab::webtab_place, webtab::webtab_go, webtab::webtab_close, links::open_link, voice::ptt_shortcut, media::media_open, media::media_close, media::media_stats, applog::app_log]))
         .setup(move |app| {
+            uiwatch::start(app.handle());
+            talkkey::start(app.handle());
             // listening before the window, whose document frame's policy names its origin
             app.manage(media::Media::for_app(app.handle()));
             notify::register(app.handle(), install.as_ref());
@@ -212,16 +266,27 @@ fn main() {
             let handle = app.handle().clone();
             window.on_window_event(move |event| match event {
                 WindowEvent::CloseRequested { api, .. } => {
+                    let _task = uiwatch::task("window close");
                     api.prevent_close();
                     hide_window(&handle);
                 }
                 // The user is at the app: its asks are in front of them, and the notifications go.
                 WindowEvent::Focused(true) => {
+                    let _task = uiwatch::task("window focus");
+                    notify::focus_changed(true);
                     notify::clear();
                     memory::sync(&handle);
                 }
                 // Minimised or brought back: the web view's memory target follows.
-                WindowEvent::Focused(false) | WindowEvent::Resized(_) => memory::sync(&handle),
+                WindowEvent::Focused(false) => {
+                    let _task = uiwatch::task("window blur");
+                    notify::focus_changed(false);
+                    memory::sync(&handle);
+                }
+                WindowEvent::Resized(_) => {
+                    let _task = uiwatch::task("window resize");
+                    memory::sync(&handle);
+                }
                 _ => {}
             });
             if hidden {
@@ -238,15 +303,18 @@ fn main() {
         .build(tauri::generate_context!())
         .expect("error while building the tauri application");
 
-    app.run(|app, event| match &event {
-        // Only Quit (app.exit) ends the process; a closed window (or Cmd+Q) is a hidden one.
-        RunEvent::ExitRequested { code: None, api, .. } => {
-            api.prevent_exit();
-            hide_window(app);
+    app.run(|app, event| {
+        let _task = run_event_label(&event).map(uiwatch::task);
+        match &event {
+            // Only Quit (app.exit) ends the process; a closed window (or Cmd+Q) is a hidden one.
+            RunEvent::ExitRequested { code: None, api, .. } => {
+                api.prevent_exit();
+                hide_window(app);
+            }
+            // A click on the Dock icon or the app in the Finder while running.
+            #[cfg(target_os = "macos")]
+            RunEvent::Reopen { .. } => tray::show_window(app),
+            _ => {}
         }
-        // A click on the Dock icon or the app in the Finder while running.
-        #[cfg(target_os = "macos")]
-        RunEvent::Reopen { .. } => tray::show_window(app),
-        _ => {}
     });
 }

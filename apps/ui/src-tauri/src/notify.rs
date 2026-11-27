@@ -6,7 +6,11 @@
 // `"open:<id>"` (`open_id`, read by `parse_open`). While the
 // window has the focus its asks are on screen, so none is shown, and when it gets the focus
 // every one still up is taken down (`clear`). An ask settled anywhere takes its own down
-// (`dismiss`).
+// (`dismiss`). Showing, clearing and dismissing run on the notification thread, one after
+// another in the order asked: each is a round trip to the system's notification service
+// (WinRT's toast history, D-Bus, UNUserNotificationCenter), which never runs on the UI thread or
+// on the async runtime's workers. Whether the window has the focus is what its events last said
+// (`focus_changed`), not a question to the UI thread.
 //
 // Windows: a toast through WinRT, tagged with the ask id for `dismiss`. A toast is
 // attributed by AppUserModelID, so the process sets one before any window exists and
@@ -24,6 +28,9 @@
 // set of actions; the body is the default action, so there is no "Open" button. macOS tells
 // nothing when an app takes its own notification down, so each wait races a stop that
 // `dismiss` and `clear` fire, and ends with the notification rather than living on.
+
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, OnceLock};
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Runtime};
@@ -124,10 +131,82 @@ pub fn truncate(text: &str, max: usize) -> String {
     out
 }
 
+static FOCUSED: AtomicBool = AtomicBool::new(false);
+
+/// The window's focus as its event says it (main.rs).
+pub fn focus_changed(focused: bool) {
+    FOCUSED.store(focused, Ordering::Relaxed);
+}
+
 /// Whether the app's window has the focus: the view shows the asks, and a notification would only repeat them.
-pub fn window_focused<R: Runtime>(app: &AppHandle<R>) -> bool {
-    use tauri::Manager;
-    app.get_window(crate::cophylad::HOST_LABEL).and_then(|w| w.is_focused().ok()).unwrap_or(false)
+pub fn window_focused() -> bool {
+    FOCUSED.load(Ordering::Relaxed)
+}
+
+type Job = Box<dyn FnOnce() + Send>;
+
+/// A thread that runs the jobs given it one after another, in order; one that panics is logged
+/// and the next runs. Where the thread cannot start, a job runs on the thread that gave it.
+struct Worker {
+    tx: Option<mpsc::Sender<Job>>,
+}
+
+impl Worker {
+    fn start(name: &str) -> Worker {
+        let (tx, rx) = mpsc::channel::<Job>();
+        let run = move || {
+            for job in rx {
+                if std::panic::catch_unwind(std::panic::AssertUnwindSafe(job)).is_err() {
+                    log::warn!("notifications: a job panicked");
+                }
+            }
+        };
+        match std::thread::Builder::new().name(name.into()).spawn(run) {
+            Ok(_) => Worker { tx: Some(tx) },
+            Err(e) => {
+                log::warn!("notifications: no thread of their own ({e}); they run where they are asked for");
+                Worker { tx: None }
+            }
+        }
+    }
+
+    fn run(&self, job: Job) {
+        match &self.tx {
+            Some(tx) => {
+                if let Err(mpsc::SendError(job)) = tx.send(job) {
+                    job();
+                }
+            }
+            None => job(),
+        }
+    }
+}
+
+/// The notification thread, started at its first job.
+fn worker() -> &'static Worker {
+    static WORKER: OnceLock<Worker> = OnceLock::new();
+    WORKER.get_or_init(|| Worker::start("notifications"))
+}
+
+/// Shows an ask's notification, on the notification thread; answers once it is up, or why not.
+pub async fn show<R: Runtime>(app: &AppHandle<R>, ask: NotifyAsk) -> Result<(), String> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let app = app.clone();
+    worker().run(Box::new(move || {
+        let _ = tx.send(platform::show(&app, ask));
+    }));
+    rx.await.unwrap_or_else(|_| Err("unavailable: the notification was not shown".into()))
+}
+
+/// Takes every notification of the app's down, on the notification thread.
+pub fn clear() {
+    worker().run(Box::new(platform::clear));
+}
+
+/// Takes one ask's notification down, on the notification thread.
+pub fn dismiss(ask: &str) {
+    let ask = ask.to_string();
+    worker().run(Box::new(move || platform::dismiss(&ask)));
 }
 
 /// What an activation does: a button answers the ask through the host page, anything else
@@ -442,11 +521,45 @@ mod platform {
     pub fn dismiss(_ask: &str) {}
 }
 
-pub use platform::{clear, dismiss, register, set_process_aumid, show};
+pub use platform::{register, set_process_aumid};
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_notification_thread_runs_its_jobs_in_order_off_the_caller_and_outlives_a_panic() {
+        let worker = Worker::start("notifications-test");
+        let caller = std::thread::current().id();
+        let (tx, rx) = mpsc::channel();
+        for n in 0..5 {
+            let tx = tx.clone();
+            worker.run(Box::new(move || {
+                let _ = tx.send((n, std::thread::current().id()));
+            }));
+            if n == 2 {
+                worker.run(Box::new(|| panic!("a job that fails")));
+            }
+        }
+        let got: Vec<_> = (0..5).map(|_| rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap()).collect();
+        assert_eq!(got.iter().map(|(n, _)| *n).collect::<Vec<_>>(), [0, 1, 2, 3, 4]);
+        assert!(got.iter().all(|(_, t)| *t != caller));
+        // without a thread, a job runs where it is given
+        let inline = Worker { tx: None };
+        let (tx, rx) = mpsc::channel();
+        inline.run(Box::new(move || {
+            let _ = tx.send(std::thread::current().id());
+        }));
+        assert_eq!(rx.try_recv().unwrap(), caller);
+    }
+
+    #[test]
+    fn the_focus_is_what_the_window_said_last() {
+        focus_changed(true);
+        assert!(window_focused());
+        focus_changed(false);
+        assert!(!window_focused());
+    }
 
     #[test]
     fn parse_action_splits_on_the_first_bar() {

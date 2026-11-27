@@ -102,15 +102,26 @@ describe("the desktop app's voice", () => {
     expect(changes).toBeGreaterThan(0);
   });
 
-  test("the talk key held and let go is push-to-talk on the node, once each way", async () => {
+  test("the talk key held and let go is push-to-talk on the node, once each way, at the times the shell read off the keyboard", async () => {
     const { voice, requests, handlers } = fixture();
     await voice.start().catch(() => {});
     const ptt = handlers.get("voice:ptt")!;
-    ptt({ down: true });
-    ptt({ down: true });
-    ptt({ down: false });
+    const pressed = Date.now() - 2000;
+    ptt({ down: true, at: pressed });
+    ptt({ down: true, at: pressed + 100 });
+    ptt({ down: false, at: pressed + 1500 });
     await Bun.sleep(0);
-    expect(requests.filter((r) => r.method === "voice.ptt").map((r) => r.params)).toEqual([{ active: true }, { active: false }]);
+    expect(requests.filter((r) => r.method === "voice.ptt").map((r) => r.params)).toEqual([
+      { active: true, at: pressed },
+      { active: false, at: pressed + 1500 },
+    ]);
+    // a shell that says no time: the edge is timed as it comes
+    const before = Date.now();
+    ptt({ down: true });
+    await Bun.sleep(0);
+    const last = requests.filter((r) => r.method === "voice.ptt").at(-1)?.params as { active: boolean; at: number };
+    expect(last.active).toBe(true);
+    expect(last.at).toBeGreaterThanOrEqual(before);
   });
 
   test("the speaker picked is kept as its id and name, starts the next launch, and is offered only where the web view can play on one", async () => {

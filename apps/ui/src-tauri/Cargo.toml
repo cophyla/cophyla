@@ -42,7 +42,9 @@ getrandom = "0.3"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.56"
-windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_UI_Shell", "Win32_UI_Input_KeyboardAndMouse", "Win32_System_SystemInformation", "Foundation", "Data_Xml_Dom", "UI_Notifications", "Win32_System_IO", "Win32_System_Ioctl"] }
+# Threading: the process out of EcoQoS and the talk key's hook thread above normal priority
+# (main.rs, talkkey.rs); WindowsAndMessaging and LibraryLoader: that hook and its message loop.
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_UI_Shell", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_System_LibraryLoader", "Foundation", "Data_Xml_Dom", "UI_Notifications", "Win32_System_IO", "Win32_System_Ioctl"] }
 # The host page's microphone granted without WebView2's prompt: the versions wry is built on.
 webview2-com = "0.38"
 windows-core-wv2 = { package = "windows-core", version = "0.61" }

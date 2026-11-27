@@ -2,6 +2,10 @@
 // this module receives frames and link state as Tauri events, sends frames through the
 // `cophylad_send` command, and gives the host page a request/response API with ids in the
 // `h<n>` namespace. DOM-free: `invoke` and `listen` are injected so the tests can fake them.
+// With `coalesce`, the frames sent in one turn go to the shell as one batch (`cophylad_send
+// { frames }`, answered with each frame's error or none), and a batch waits for the one before
+// it to be answered, so frames reach cophylad in the order they were sent however the shell
+// schedules its commands; the desktop's shell takes batches, the controller's link one frame.
 
 import { RpcError, RpcMessage } from "@cophyla/protocol";
 import type { ClientResult, ProtocolError, RpcNotification, RpcResponse } from "@cophyla/protocol";
@@ -43,6 +47,13 @@ interface Pending {
 type FrameHandler = (frame: RpcMessage) => void;
 type StateHandler = (snapshot: LinkSnapshot) => void;
 
+/** A frame waiting for its batch, and its sender's promise. */
+interface Outgoing {
+  frame: object;
+  resolve: () => void;
+  reject: (error: RpcError) => void;
+}
+
 /** A `unavailable`/`timeout`/`invalid` error the way cophylad would word it, thrown to a caller. */
 function rpcError(code: ProtocolError["code"], message: string): RpcError {
   return new RpcError(code, message);
@@ -57,10 +68,15 @@ export class Connection {
   private frameHandlers = new Set<FrameHandler>();
   private stateHandlers = new Set<StateHandler>();
   private attached = false;
+  private coalesce: boolean;
+  /** The frames for the next batch, and whether a batch is out or one is due this turn. */
+  private outbox: Outgoing[] = [];
+  private flushing = false;
 
-  constructor(io: TauriIo, opts: { timeoutMs?: number } = {}) {
+  constructor(io: TauriIo, opts: { timeoutMs?: number; coalesce?: boolean } = {}) {
     this.io = io;
     this.timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    this.coalesce = opts.coalesce === true;
   }
 
   get connected(): boolean {
@@ -95,11 +111,40 @@ export class Connection {
 
   /** Sends a frame as is; the shell refuses anything that is not an object or that says hello. */
   async send(frame: object): Promise<void> {
+    if (this.coalesce) return this.queue(frame);
     try {
       await this.io.invoke<void>("cophylad_send", { frame });
     } catch (e) {
       throw rpcError(codeOf(e), messageOf(e));
     }
+  }
+
+  private queue(frame: object): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      this.outbox.push({ frame, resolve, reject });
+      if (this.flushing) return;
+      this.flushing = true;
+      queueMicrotask(() => void this.flush());
+    });
+  }
+
+  /** Sends what waits as one batch, then the next batch, until none waits. */
+  private async flush(): Promise<void> {
+    while (this.outbox.length > 0) {
+      const batch = this.outbox;
+      this.outbox = [];
+      try {
+        const errors = await this.io.invoke<(string | null)[] | null | undefined>("cophylad_send", { frames: batch.map((o) => o.frame) });
+        batch.forEach((o, i) => {
+          const error = errors?.[i];
+          if (error) o.reject(rpcError(codeOf(error), messageOf(error)));
+          else o.resolve();
+        });
+      } catch (e) {
+        for (const o of batch) o.reject(rpcError(codeOf(e), messageOf(e)));
+      }
+    }
+    this.flushing = false;
   }
 
   /** A request on the host's own connection, answered or failed within the timeout. */

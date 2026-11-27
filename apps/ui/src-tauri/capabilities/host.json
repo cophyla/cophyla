@@ -32,6 +32,7 @@
     "allow-ptt-shortcut",
     "allow-media-open",
     "allow-media-close",
-    "allow-media-stats"
+    "allow-media-stats",
+    "allow-app-log"
   ]
 }

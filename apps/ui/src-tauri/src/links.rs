@@ -16,7 +16,7 @@ pub fn web_page(raw: &str) -> Result<Url, String> {
 
 /// Opens a web page in the system browser.
 #[tauri::command]
-pub fn open_link(url: String) -> Result<(), String> {
+pub async fn open_link(url: String) -> Result<(), String> {
     let page = web_page(&url)?;
     let mut child = browser(page.as_str()).spawn().map_err(|e| format!("unavailable: no browser to open the link: {e}"))?;
     // The opener hands the page on and exits; waited for, so it leaves nothing behind.

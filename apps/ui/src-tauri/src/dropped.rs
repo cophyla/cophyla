@@ -143,7 +143,11 @@ fn text(path: PathBuf) -> Result<String, String> {
 /// under, or with none (Linux) all of them; a drop is handed over once, whether or not the
 /// names were its own. On Windows none is ever kept: the view asks WebView2 there.
 #[tauri::command]
-pub fn dropped_paths(names: Option<Vec<String>>) -> Result<Vec<String>, String> {
+pub async fn dropped_paths(names: Option<Vec<String>>) -> Result<Vec<String>, String> {
+    take(names)
+}
+
+fn take(names: Option<Vec<String>>) -> Result<Vec<String>, String> {
     let last = LAST.lock().unwrap_or_else(PoisonError::into_inner).take();
     claim(last, names.as_deref(), Instant::now())
 }
@@ -271,16 +275,16 @@ mod tests {
     #[test]
     fn a_drop_is_handed_over_once() {
         record(vec![PathBuf::from("/x/a.txt")]);
-        assert_eq!(dropped_paths(Some(names(&["a.txt"]))), Ok(names(&["/x/a.txt"])));
-        assert!(dropped_paths(Some(names(&["a.txt"]))).is_err());
+        assert_eq!(take(Some(names(&["a.txt"]))), Ok(names(&["/x/a.txt"])));
+        assert!(take(Some(names(&["a.txt"]))).is_err());
         // a claim that fails takes the drop all the same
         record(vec![PathBuf::from("/x/a.txt")]);
-        assert!(dropped_paths(Some(names(&["b.txt"]))).is_err());
-        assert!(dropped_paths(Some(names(&["a.txt"]))).is_err());
+        assert!(take(Some(names(&["b.txt"]))).is_err());
+        assert!(take(Some(names(&["a.txt"]))).is_err());
         // and so does one with no names, which only Linux answers
         record(vec![PathBuf::from("/x/a.txt")]);
-        assert_eq!(dropped_paths(None).is_ok(), cfg!(target_os = "linux"));
-        assert!(dropped_paths(None).is_err());
-        assert!(dropped_paths(Some(names(&["a.txt"]))).is_err());
+        assert_eq!(take(None).is_ok(), cfg!(target_os = "linux"));
+        assert!(take(None).is_err());
+        assert!(take(Some(names(&["a.txt"]))).is_err());
     }
 }

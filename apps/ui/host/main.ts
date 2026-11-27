@@ -15,6 +15,8 @@
 // section in Settings. For where the node reads replies out, the page says whether the window
 // is in front and shown (`voice.presence`), on every connect and as that changes; focus moving
 // into the view's frame is still the window's.
+// The link to cophylad goes over the page's own socket to the shell (link.ts), off the app's UI
+// thread, its frames sent a batch a turn; what the page logs reaches the app's log file (log.ts).
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -22,22 +24,32 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { ViewContent } from "@cophyla/protocol";
 import { AskNotifier, checkWords, Connection, MediaHost, MentionNotifier, NoteNotifier, SnapshotCache, UpdateChecker, ViewHost } from "@cophyla/viewhost";
 import type { Activated, LinkSnapshot, TauriIo } from "@cophyla/viewhost";
+import { PageLink } from "./link.ts";
+import { describe, PageLog } from "./log.ts";
 import { StreamWindows } from "./open.ts";
 import { DesktopVoice } from "./voice.ts";
 import { WebTabs, webTabsHere } from "./webtabs.ts";
 import { shellMedia } from "./media.ts";
 import type { ShellState } from "./webtabs.ts";
 
-const io: TauriIo = {
+const tauri: TauriIo = {
   invoke: (cmd, args) => invoke(cmd, args),
   listen: (event, handler) => listen(event, (e) => handler(e.payload as never)).then((off) => off),
 };
+const link = new PageLink({ io: tauri, socket: (url) => new WebSocket(url), log: (m) => pageLog.warn(m) });
+const io: TauriIo = {
+  invoke: <T>(cmd: string, args?: Record<string, unknown>) => link.invoke<T>(cmd, args),
+  listen: <T>(event: string, handler: (payload: T) => void) => link.listen<T>(event, handler),
+};
+const pageLog = new PageLog({ send: (lines) => io.invoke<void>("app_log", { lines }) });
+window.addEventListener("error", (e) => pageLog.error(`page error: ${describe(e.error ?? e.message)}`));
+window.addEventListener("unhandledrejection", (e) => pageLog.error(`unhandled rejection: ${describe(e.reason)}`));
 
 const statusEl = document.getElementById("status")!;
 const viewEl = document.getElementById("view")!;
 const appWindow = getCurrentWindow();
 
-const conn = new Connection(io);
+const conn = new Connection(io, { coalesce: true });
 const cache = new SnapshotCache();
 const voice = new DesktopVoice({
   link: conn,
@@ -53,7 +65,7 @@ const voice = new DesktopVoice({
   // The view draws the microphone while it records, over its input.
   onRecording: (on) => viewhost.recording(on),
   onLevels: (levels) => viewhost.levels(levels),
-  log: (m) => console.info(m),
+  log: (m) => pageLog.info(m),
 });
 const streams = new StreamWindows({
   invoke: io.invoke,
@@ -61,7 +73,7 @@ const streams = new StreamWindows({
   // a stream beside the view is placed in the frame's coordinates
   frame: () => viewEl.querySelector("iframe")?.getBoundingClientRect(),
   onClosed: (stream) => viewhost.streamClosed(stream),
-  log: (m) => console.warn(m),
+  log: (m) => pageLog.warn(m),
 });
 // The web tabs beside agents' chats: on Windows, where the shell opens them.
 const webTabsOn = webTabsHere();
@@ -70,12 +82,12 @@ const webTabs = new WebTabs({
   request: (method, params) => conn.request(method, params),
   // a tab is placed in the frame's coordinates, as a stream is
   frame: () => viewEl.querySelector("iframe")?.getBoundingClientRect(),
-  log: (m) => console.warn(m),
+  log: (m) => pageLog.warn(m),
 });
 // A video or a sound streams to the view's player from the shell's server on the loopback, its
 // pieces read by the shell itself; a file on another computer is kept on this one, and one on
 // this computer is not.
-const media = new MediaHost({ native: shellMedia(io), request: (method, params) => conn.request(method, params), here: () => conn.state.hello?.client.node, log: (m) => console.warn(m) });
+const media = new MediaHost({ native: shellMedia(io), request: (method, params) => conn.request(method, params), here: () => conn.state.hello?.client.node, log: (m) => pageLog.warn(m) });
 /** The host's own requests a view may make: a web tab's, a stream's of media, and the streams'. */
 const hostRequests = (method: string, params: unknown): Promise<unknown> => (method === "host.webtab" ? webTabs.host(method, params) : method === "host.media" ? media.host(method, params) : streams.host(method, params));
 // Check for updates, from the tray and the settings' Updates page: what the node found comes
@@ -162,7 +174,7 @@ let loaded = false;
 
 function note(message: string): void {
   lastNote = message;
-  console.warn(message);
+  pageLog.warn(message);
   renderStatus(conn.state);
 }
 
@@ -172,7 +184,7 @@ async function showWindow(): Promise<void> {
     await appWindow.unminimize();
     await appWindow.setFocus();
   } catch (e) {
-    console.warn("show window", e);
+    pageLog.warn(`show window: ${describe(e)}`);
   }
 }
 
@@ -304,4 +316,4 @@ void voice
   .then((audio) => conn.attach({ audio, ...(webTabsOn ? { webTabs: true } : {}) }))
   .then((s) => renderStatus(s))
   .catch((e) => note(`attach: ${e instanceof Error ? e.message : String(e)}`));
-void voice.start().catch((e: unknown) => console.warn("voice", e));
+void voice.start().catch((e: unknown) => pageLog.warn(`voice: ${describe(e)}`));

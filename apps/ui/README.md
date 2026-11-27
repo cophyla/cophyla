@@ -34,7 +34,7 @@ cophylad outlive the app.
 
 | Path | What |
 |---|---|
-| `src-tauri/` | the Rust shell: `main.rs` composition, `cophylad.rs` the link and the spawn, `install.rs` installed mode, `views.rs` the `view` protocol, `commands.rs` the five app commands, `notify.rs` toasts and the AUMID, `stream.rs` a remote desktop's window, or its page laid over the host window beside the view (`Window::add_child`, which is why `tauri` has its `unstable` feature), `links.rs` a clicked link in the system browser, `voice.rs` the microphone grant and the talk key, `dropped.rs` the paths of files dropped on a view (`dropped/` a small piece per platform), `tray.rs` |
+| `src-tauri/` | the Rust shell: `main.rs` composition, `cophylad.rs` the link and the spawn, `page.rs` the host page's link socket, `applog.rs` the app's log file, `uiwatch.rs` the UI thread's watchdog, `talkkey.rs` the talk key's timeline and hook, `install.rs` installed mode, `views.rs` the `view` protocol, `commands.rs` the five app commands, `notify.rs` toasts and the AUMID, `stream.rs` a remote desktop's window, or its page laid over the host window beside the view (`Window::add_child`, which is why `tauri` has its `unstable` feature), `links.rs` a clicked link in the system browser, `voice.rs` the microphone grant and the talk key, `dropped.rs` the paths of files dropped on a view (`dropped/` a small piece per platform), `tray.rs` |
 | `src-tauri/commands.txt` | the app manifest's command list, read by `build.rs` |
 | `src-tauri/capabilities/host.json` | what the `host` web view may call, granted by the web view's label and never the window's, which a stream's page beside the view shares; the only capability file |
 | `host/` | the host page: `main.ts`, `voice.ts`, `index.html`, `host.css`, `inliner.ts` — the shell's half, the rest is `@cophyla/viewhost`, whose view picker's `chooser.css` the build copies beside them, and `@cophyla/voicehost`, whose worklet, wake worker and `wake/` files it copies too |
@@ -56,10 +56,11 @@ asks the node for a ticket — so a change to how a view is isolated is made in 
 | `COPHYLA_HOME` | the user data directory, `~/.cophyla` by default; the shell reads `config.toml` `[api]` and `data/client.token` from it and starts cophylad on it |
 | `COPHYLAD_COMMAND`, `COPHYLAD_ARGS` | what to run when cophylad is not listening; by default `bun run <repo>/apps/cophylad/src/main.ts --home <home>` from a checkout, `<version dir>\bun.exe run <version dir>\cophylad\apps\cophylad\src\main.ts --home <home>` when installed |
 | `COPHYLA_INSTALL_DIR`, `COPHYLA_PLATFORM_DIR` | set by the launcher: the install directory and this version's directory; the shell derives them from its own path when absent, and passes them to cophylad |
-| `RUST_LOG` | the shell's own log level on stderr, `info` by default |
+| `RUST_LOG` | the shell's own log level, `info` by default: to stderr and to `logs/cophyla-ui.log` in the app's local data (`cophyla-ui-dev.log` for a debug build), 5 MB rotated to `.1` and `.2`, with the host page's lines (target `page`) and the UI thread's stalls (`UI thread stalled`) |
 | `--hidden` | start with the window hidden, in the tray; launch at login passes it |
 
-cophylad's stdout and stderr go to `<home>/data/cophylad.log`. The shell starts cophylad only when a
+cophylad writes its own log to `<home>/data/cophylad.log` (the shell names it in `COPHYLAD_LOG_FILE`),
+and its stdout and stderr go to `<home>/data/cophylad.stderr.log`. The shell starts cophylad only when a
 connection is refused, at most once every 15 s, so a daemon the user started is found, not
 duplicated. A second launch of the app focuses the first.
 
@@ -102,7 +103,10 @@ in its own colour on a light or dark bar, as it does its own icons.
 ## How a view is isolated
 
 The host page never holds the token: the shell says `hello` itself and pumps frames to the
-page as `cophylad:frame` events; the page sends through `cophylad_send`, which refuses `hello`.
+page over the page's link socket, a WebSocket to the shell's loopback server that only the host
+page's origin may open (`page.rs`), or as one `cophylad:frames` event a batch when it is not
+open; the page sends over the socket, or through `cophylad_send`, a batch a turn, which refuses
+`hello` either way. None of it runs on the app's UI thread.
 The page fetches a view with `view.get` on that connection and hands its files to
 `view_stage`; the shell serves them from memory on the `view` scheme, at
 `<view origin>/<id>/<version>/<path>`, to the `host` webview only. The web view decides the
@@ -270,7 +274,9 @@ the shell with `cophylad_attach`, which says it in every hello from then on.
 - **The talk key**, Ctrl+Alt+Space (Ctrl+Shift+Space on a Mac, where Control+Option+Space is
   the system's "Select next source in Input menu") unless the user sets another in Settings, is a global
   shortcut (`tauri-plugin-global-shortcut`): held anywhere on the desktop it is push-to-talk,
-  told to the page as `voice:ptt {down}`. The page keeps the choice and registers it with
+  told to the page as `voice:ptt {down, at}`, `at` when the key really went down or up: on
+  Windows a low-level keyboard hook on a thread of its own times it (`talkkey.rs`), so a press
+  the UI thread handled late keeps its length. The page keeps the choice and registers it with
   `ptt_shortcut` at every start; a key another app holds is refused with a word.
 - **The talk buttons** are the view's: `host.ready` says `talk`, and the default view draws a
   microphone beside Send in the chat, in every agent's chat and in every group's post, that

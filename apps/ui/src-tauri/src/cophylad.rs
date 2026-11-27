@@ -1,21 +1,29 @@
 // The link to cophylad. The credential and the connection it authenticates live here, on the
 // native side: the shell reads `[api]` from config.toml and `data/client.token`, opens the
-// WebSocket, says `hello`, and pumps frames to and from the host page as Tauri events. The
+// WebSocket, says `hello`, and pumps frames to and from the host page. The
 // token never enters web content. When the connection is refused the same loop starts cophylad
-// (detached, no console, stdio to `data/cophylad.log`) and never stops it: cophylad outlives the
+// (detached, no console, writing its own `data/cophylad.log`, its stdio to
+// `data/cophylad.stderr.log`) and never stops it: cophylad outlives the
 // app by design. Installed, the shell runs cophylad from its own version directory with the
 // shipped runtime; when another version waits (cophylad staged one, or the launcher already
 // rotated `current` past this one) it relaunches through the launcher instead of starting a
 // daemon of the wrong version, and while connected to a daemon of another version it asks
 // that daemon to stop when idle with `update.apply`, so the versions converge.
+//
+// The page's side of the link never runs on the UI thread. What comes from cophylad is read as
+// a batch, every frame the socket has ready at a wakeup, and goes to the page in order: over
+// the page's link socket when it has one open (page.rs), else as one `cophylad:frames` event
+// per batch, so a burst costs the UI thread one script rather than one a frame. The link's
+// state goes the same way, and so may any event of the shell's (`page_event`). What the page
+// sends comes over its socket too, or by the `cophylad_send` command, a batch at a time.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use futures_util::{SinkExt, StreamExt};
+use futures_util::{FutureExt, SinkExt, StreamExt};
 use serde::Serialize;
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager, Runtime};
@@ -26,8 +34,15 @@ use crate::install::Install;
 use crate::tray;
 
 pub const HOST_LABEL: &str = "host";
-pub const EVENT_FRAME: &str = "cophylad:frame";
+/// The page's frames while it has no link socket: an array of frames, as cophylad sent them, in order.
+pub const EVENT_FRAMES: &str = "cophylad:frames";
 pub const EVENT_STATE: &str = "cophylad:state";
+/// The most frames, and bytes, one batch to the page carries.
+const BATCH_FRAMES: usize = 256;
+const BATCH_BYTES: usize = 4 << 20;
+/// The messages waiting for the page's socket; past them the socket is let go, and the page,
+/// which then attaches again, hears what follows as events.
+const PAGE_QUEUE: usize = 4096;
 
 const HELLO_ID: &str = "hello";
 /// Requests the shell makes for itself carry this prefix; their answers are not forwarded to the host page.
@@ -66,7 +81,10 @@ pub struct Paths {
     pub home: PathBuf,
     pub config: PathBuf,
     pub token: PathBuf,
+    /// The daemon's own log, which it writes and rotates (`COPHYLAD_LOG_FILE`).
     pub log: PathBuf,
+    /// Where the daemon's stdout and stderr go: what it never logged itself, a runtime's panic.
+    pub stderr: PathBuf,
 }
 
 impl Paths {
@@ -77,12 +95,12 @@ impl Paths {
             .filter(|p| !p.as_os_str().is_empty())
             .or_else(|| dirs::home_dir().map(|h| h.join(".cophyla")))
             .unwrap_or_else(|| PathBuf::from(".cophyla"));
-        Paths {
-            config: home.join("config.toml"),
-            token: home.join("data").join("client.token"),
-            log: home.join("data").join("cophylad.log"),
-            home,
-        }
+        Paths::under(home)
+    }
+
+    fn under(home: PathBuf) -> Paths {
+        let data = home.join("data");
+        Paths { config: home.join("config.toml"), token: data.join("client.token"), log: data.join("cophylad.log"), stderr: data.join("cophylad.stderr.log"), home }
     }
 }
 
@@ -178,23 +196,33 @@ pub fn resolve_command(paths: &Paths, install: Option<&Install>) -> CophyladComm
     CophyladCommand { program: bun, args: vec!["run".into(), main.to_string_lossy().into_owned(), "--home".into(), home], cwd: None, env: Vec::new() }
 }
 
-/// Starts cophylad detached: no console of its own, stdout and stderr appended to the log.
-/// Nothing ends it when the app exits; the handle is kept only to tell whether it still runs.
-pub fn spawn(paths: &Paths, cmd: &CophyladCommand) -> Result<std::process::Child, String> {
-    if let Some(dir) = paths.log.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
-    }
-    let open_log = || std::fs::OpenOptions::new().create(true).append(true).open(&paths.log);
-    let out = open_log().map_err(|e| format!("cannot open {}: {e}", paths.log.display()))?;
-    let err = open_log().map_err(|e| format!("cannot open {}: {e}", paths.log.display()))?;
+/// The daemon's process as the shell starts it, but for its stdio: `cmd`, told to write its own
+/// log to `paths.log` (`COPHYLAD_LOG_FILE`, an absolute path), which it rotates itself.
+fn daemon_command(paths: &Paths, cmd: &CophyladCommand) -> Command {
     let mut command = Command::new(&cmd.program);
-    command.args(&cmd.args).stdin(Stdio::null()).stdout(Stdio::from(out)).stderr(Stdio::from(err));
+    command.args(&cmd.args);
     if let Some(cwd) = &cmd.cwd {
         command.current_dir(cwd);
     }
     for (k, v) in &cmd.env {
         command.env(k, v);
     }
+    command.env("COPHYLAD_LOG_FILE", std::path::absolute(&paths.log).unwrap_or_else(|_| paths.log.clone()));
+    command
+}
+
+/// Starts cophylad detached: no console of its own, its log its own to write, and its stdout
+/// and stderr appended to `paths.stderr`. Nothing ends it when the app exits; the handle is kept
+/// only to tell whether it still runs.
+pub fn spawn(paths: &Paths, cmd: &CophyladCommand) -> Result<std::process::Child, String> {
+    if let Some(dir) = paths.stderr.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+    }
+    let open_log = || std::fs::OpenOptions::new().create(true).append(true).open(&paths.stderr);
+    let out = open_log().map_err(|e| format!("cannot open {}: {e}", paths.stderr.display()))?;
+    let err = open_log().map_err(|e| format!("cannot open {}: {e}", paths.stderr.display()))?;
+    let mut command = daemon_command(paths, cmd);
+    command.stdin(Stdio::null()).stdout(Stdio::from(out)).stderr(Stdio::from(err));
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -243,6 +271,42 @@ fn now_ms() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }
 
+/// What the link hands the app beside the page's socket: the page's frames and the link's state
+/// as events while the page has no socket, the media server's answers, and a staged update for
+/// the tray. The app's handle, or a test's.
+pub trait Shell {
+    fn emit_frames(&self, frames: Vec<String>);
+    fn emit_state(&self, snapshot: &LinkSnapshot);
+    fn media_answered(&self, id: &str, frame: &Value);
+    fn update_staged(&self, staged: Option<&str>);
+}
+
+impl<R: Runtime> Shell for AppHandle<R> {
+    fn emit_frames(&self, frames: Vec<String>) {
+        let _ = self.emit_to(HOST_LABEL, EVENT_FRAMES, frames);
+    }
+
+    fn emit_state(&self, snapshot: &LinkSnapshot) {
+        let _ = self.emit_to(HOST_LABEL, EVENT_STATE, snapshot);
+    }
+
+    fn media_answered(&self, id: &str, frame: &Value) {
+        if let Some(media) = self.try_state::<crate::media::Media>() {
+            media.answered(id, frame);
+        }
+    }
+
+    fn update_staged(&self, staged: Option<&str>) {
+        tray::set_update(self, staged);
+    }
+}
+
+/// The page's link socket while it is open: which one it is, and its queue.
+struct Page {
+    id: u64,
+    tx: mpsc::Sender<String>,
+}
+
 /// What the commands share with the link task.
 pub struct Link {
     tx: mpsc::Sender<String>,
@@ -254,11 +318,45 @@ pub struct Link {
     audio: Mutex<Value>,
     /// The host page opens web tabs (webtab.rs), as it said at attach: the hello says `webTabs`.
     web_tabs: AtomicBool,
+    page: Mutex<Option<Page>>,
+    pages: AtomicU64,
 }
 
 /// The hello's `audio` before the host page has said what it has: nothing, as before it could.
 fn no_audio() -> Value {
     json!({ "in": false, "out": false })
+}
+
+/// The link's state as the page's socket carries it: `["state", snapshot]`. The shell's own
+/// messages on the socket are arrays, which no frame of cophylad's is.
+pub fn state_message(snapshot: &LinkSnapshot) -> String {
+    serde_json::to_string(&("state", snapshot)).unwrap_or_default()
+}
+
+/// An event of the shell's as the page's socket carries it: `["event", name, payload]`.
+pub fn event_message(event: &str, payload: &impl Serialize) -> String {
+    serde_json::to_string(&("event", event, payload)).unwrap_or_default()
+}
+
+/// A frame the page may send: a JSON object, and not `hello`, which is the shell's alone: the
+/// token is not the page's to present, and a second hello on an open connection is a conflict anyway.
+pub fn check_frame(frame: &Value) -> Result<(), String> {
+    let Some(obj) = frame.as_object() else {
+        return Err("invalid: frame must be a JSON object".into());
+    };
+    if obj.get("method").and_then(Value::as_str) == Some("hello") {
+        return Err("denied: hello is sent by the shell".into());
+    }
+    Ok(())
+}
+
+/// Sends an event of the shell's to the host page: over its socket when it has one open, else as a
+/// Tauri event.
+pub fn page_event<R: Runtime, P: Serialize + Clone>(app: &AppHandle<R>, event: &str, payload: P) {
+    let sent = app.try_state::<Link>().is_some_and(|link| link.to_page(vec![event_message(event, &payload)]).is_ok());
+    if !sent {
+        let _ = app.emit_to(HOST_LABEL, event, payload);
+    }
 }
 
 impl Link {
@@ -271,7 +369,51 @@ impl Link {
             reattach: Notify::new(),
             audio: Mutex::new(no_audio()),
             web_tabs: AtomicBool::new(false),
+            page: Mutex::new(None),
+            pages: AtomicU64::new(1),
         }
+    }
+
+    /// The frames queued for cophylad, for the link task: once.
+    pub(crate) fn take_outbound(&self) -> Option<mpsc::Receiver<String>> {
+        self.rx.lock().ok().and_then(|mut r| r.take())
+    }
+
+    /// A page socket opened: from now on the page's frames, the link's state and the shell's
+    /// events go to it, and a socket open before it is let go. Answers its number and its queue.
+    pub fn page_opened(&self) -> (u64, mpsc::Receiver<String>) {
+        let (tx, rx) = mpsc::channel(PAGE_QUEUE);
+        let id = self.pages.fetch_add(1, Ordering::Relaxed);
+        *self.page.lock().unwrap_or_else(PoisonError::into_inner) = Some(Page { id, tx });
+        (id, rx)
+    }
+
+    /// Page socket `id` closed: what follows goes as events, unless another opened since.
+    pub fn page_closed(&self, id: u64) {
+        let mut page = self.page.lock().unwrap_or_else(PoisonError::into_inner);
+        if page.as_ref().is_some_and(|p| p.id == id) {
+            *page = None;
+        }
+    }
+
+    /// Hands messages to the page's socket, in order. Without one, all come back, for the events;
+    /// when its queue is full the socket is let go and the rest come back.
+    pub fn to_page(&self, messages: Vec<String>) -> Result<(), Vec<String>> {
+        let mut page = self.page.lock().unwrap_or_else(PoisonError::into_inner);
+        let Some(p) = page.as_ref() else { return Err(messages) };
+        let mut rest = messages.into_iter();
+        while let Some(m) = rest.next() {
+            if let Err(e) = p.tx.try_send(m) {
+                let (m, why) = match e {
+                    mpsc::error::TrySendError::Full(m) => (m, "its queue is full"),
+                    mpsc::error::TrySendError::Closed(m) => (m, "it closed"),
+                };
+                log::warn!("page socket {}: {why}; the page hears the link as events until it attaches again", p.id);
+                *page = None;
+                return Err(std::iter::once(m).chain(rest).collect());
+            }
+        }
+        Ok(())
     }
 
     /// Whether the next hello says the host page opens web tabs: only where the shell has them,
@@ -338,13 +480,25 @@ impl Link {
         self.reattach.notify_one();
     }
 
-    fn set<R: Runtime>(&self, app: &AppHandle<R>, state: LinkState, hello: Option<Value>, error: Option<String>, url: &str) {
+    pub(crate) fn set<S: Shell + ?Sized>(&self, shell: &S, state: LinkState, hello: Option<Value>, error: Option<String>, url: &str) {
         let snap = LinkSnapshot { state, hello, since: now_ms(), error, url: url.to_string() };
         if let Ok(mut s) = self.snapshot.lock() {
             *s = snap.clone();
         }
         log::info!("link {:?}{}", state, snap.error.as_deref().map(|e| format!(": {e}")).unwrap_or_default());
-        let _ = app.emit_to(HOST_LABEL, EVENT_STATE, snap);
+        if self.to_page(vec![state_message(&snap)]).is_err() {
+            shell.emit_state(&snap);
+        }
+    }
+
+    /// Frames for the page, in order: to its socket, or as one event.
+    fn deliver<S: Shell + ?Sized>(&self, shell: &S, frames: Vec<String>) {
+        if frames.is_empty() {
+            return;
+        }
+        if let Err(rest) = self.to_page(frames) {
+            shell.emit_frames(rest);
+        }
     }
 }
 
@@ -434,7 +588,7 @@ fn is_refused(e: &tungstenite::Error) -> bool {
     }
 }
 
-enum Attempt {
+pub(crate) enum Attempt {
     /// The socket closed after a good hello; reconnect after the backoff.
     Dropped(String),
     /// Could not connect; `refused` says cophylad is not listening.
@@ -467,7 +621,7 @@ pub async fn run_link<R: Runtime>(app: AppHandle<R>) {
     let paths = Paths::resolve();
     let install = Install::detect();
     log::info!("shell {OWN_VERSION}, {}", crate::install::describe(install.as_ref()));
-    let mut rx = link.rx.lock().ok().and_then(|mut r| r.take()).expect("run_link runs once");
+    let mut rx = link.take_outbound().expect("run_link runs once");
     let mut spawner = Spawner { paths: paths.clone(), install: install.clone(), last: None, child: None };
     let mut unanswered = Unanswered::default();
     let mut backoff = BACKOFF_MIN;
@@ -563,10 +717,10 @@ fn version_mismatch(hello: &Value, install: Option<&Install>) -> Option<String> 
 
 /// A `shell:` response is the shell's own, and a `media:` one the media server's (media.rs), which
 /// reads the pieces it streams itself so they never pass through the page; anything else goes to
-/// the host page. `update.state` for the platform also drives the tray item.
-fn on_frame<R: Runtime>(app: &AppHandle<R>, text: &str) {
-    let Ok(v) = serde_json::from_str::<Value>(text) else {
-        let _ = app.emit_to(HOST_LABEL, EVENT_FRAME, text);
+/// the host page, in `page`. `update.state` for the platform also drives the tray item.
+fn on_frame<S: Shell + ?Sized>(shell: &S, text: String, page: &mut Vec<String>) {
+    let Ok(v) = serde_json::from_str::<Value>(&text) else {
+        page.push(text);
         return;
     };
     if let Some(id) = v.get("id").and_then(Value::as_str) {
@@ -578,21 +732,32 @@ fn on_frame<R: Runtime>(app: &AppHandle<R>, text: &str) {
             return;
         }
         if id.starts_with(crate::media::RPC_PREFIX) {
-            if let Some(media) = app.try_state::<crate::media::Media>() {
-                media.answered(id, &v);
-            }
+            shell.media_answered(id, &v);
             return;
         }
     }
     if v.get("method").and_then(Value::as_str) == Some("update.state") {
         if let Some(params) = v.get("params") {
             if params.get("component").and_then(Value::as_str) == Some("platform") {
-                let staged = params.get("staged").and_then(Value::as_str).map(str::to_string);
-                tray::set_update(app, staged.as_deref());
+                shell.update_staged(params.get("staged").and_then(Value::as_str));
             }
         }
     }
-    let _ = app.emit_to(HOST_LABEL, EVENT_FRAME, text);
+    page.push(text);
+}
+
+/// Why a read off cophylad's socket ends the connection; none for a frame or a control message.
+fn ending(msg: Option<Result<Message, tungstenite::Error>>, shell: &(impl Shell + ?Sized), page: &mut Vec<String>) -> Option<Attempt> {
+    match msg {
+        Some(Ok(Message::Text(text))) => {
+            on_frame(shell, text.as_str().to_owned(), page);
+            None
+        }
+        Some(Ok(Message::Close(frame))) => Some(Attempt::Dropped(frame.map(|f| format!("cophylad closed the socket: {} {}", u16::from(f.code), f.reason)).unwrap_or_else(|| "cophylad closed the socket".into()))),
+        Some(Ok(_)) => None,
+        Some(Err(e)) => Some(Attempt::Dropped(e.to_string())),
+        None => Some(Attempt::Dropped("socket ended".into())),
+    }
 }
 
 /// The shell's hello: the token, the app's audio as the page said it, and `webTabs` where the
@@ -605,7 +770,10 @@ fn hello_frame(token: &str, audio: Value, web_tabs: bool) -> Value {
     json!({ "jsonrpc": "2.0", "id": HELLO_ID, "method": "hello", "params": params })
 }
 
-async fn attempt<R: Runtime>(app: &AppHandle<R>, link: &Link, url: &str, token: &str, rx: &mut mpsc::Receiver<String>, install: Option<&Install>) -> Attempt {
+/// One connection to cophylad: the hello, then frames both ways until it ends. What comes in is
+/// read a batch at a wakeup (every frame the socket has ready, `BATCH_FRAMES` and `BATCH_BYTES` at
+/// most) and handed to the page as one; what goes out is written likewise, flushed once.
+pub(crate) async fn attempt<S: Shell + ?Sized>(shell: &S, link: &Link, url: &str, token: &str, rx: &mut mpsc::Receiver<String>, install: Option<&Install>) -> Attempt {
     let connect = tokio::time::timeout(CONNECT_DEADLINE, tokio_tungstenite::connect_async(url)).await;
     let (mut ws, _) = match connect {
         Ok(Ok(pair)) => pair,
@@ -642,7 +810,7 @@ async fn attempt<R: Runtime>(app: &AppHandle<R>, link: &Link, url: &str, token: 
             },
         }
     };
-    link.set(app, LinkState::Connected, Some(result.clone()), None, url);
+    link.set(shell, LinkState::Connected, Some(result.clone()), None, url);
 
     let mismatch = version_mismatch(&result, install);
     if let Some(why) = &mismatch {
@@ -660,21 +828,34 @@ async fn attempt<R: Runtime>(app: &AppHandle<R>, link: &Link, url: &str, token: 
         tokio::select! {
             out = rx.recv() => match out {
                 Some(text) => {
-                    if let Err(e) = ws.send(Message::text(text)).await {
+                    let mut sent = ws.feed(Message::text(text)).await;
+                    let mut n = 1;
+                    while sent.is_ok() && n < BATCH_FRAMES {
+                        let Ok(text) = rx.try_recv() else { break };
+                        sent = ws.feed(Message::text(text)).await;
+                        n += 1;
+                    }
+                    if let Err(e) = sent.and(ws.flush().await) {
                         return Attempt::Dropped(format!("send failed: {e}"));
                     }
                 }
                 None => return Attempt::Dropped("link closed".into()),
             },
-            msg = ws.next() => match msg {
-                Some(Ok(Message::Text(text))) => on_frame(app, text.as_str()),
-                Some(Ok(Message::Close(frame))) => {
-                    return Attempt::Dropped(frame.map(|f| format!("cophylad closed the socket: {} {}", u16::from(f.code), f.reason)).unwrap_or_else(|| "cophylad closed the socket".into()));
+            msg = ws.next() => {
+                let mut page = Vec::new();
+                let mut end = ending(msg, shell, &mut page);
+                let mut bytes: usize = page.iter().map(String::len).sum();
+                while end.is_none() && page.len() < BATCH_FRAMES && bytes < BATCH_BYTES {
+                    let Some(msg) = ws.next().now_or_never() else { break };
+                    let before = page.len();
+                    end = ending(msg, shell, &mut page);
+                    bytes += page[before..].iter().map(String::len).sum::<usize>();
                 }
-                Some(Ok(_)) => {}
-                Some(Err(e)) => return Attempt::Dropped(e.to_string()),
-                None => return Attempt::Dropped("socket ended".into()),
-            },
+                link.deliver(shell, page);
+                if let Some(end) = end {
+                    return end;
+                }
+            }
             _ = link.reattach.notified() => {
                 let _ = ws.close(None).await;
                 return Attempt::Dropped("reattaching".into());
@@ -725,7 +906,7 @@ mod tests {
         let vdir = root.join("versions").join("0.1.2");
         std::fs::create_dir_all(&vdir).unwrap();
         let install = Install { dir: root.clone(), version_dir: vdir.clone(), launcher: None, version: "0.1.2".into() };
-        let paths = Paths { home: root.join("home"), config: root.join("home/config.toml"), token: root.join("home/data/client.token"), log: root.join("home/data/cophylad.log") };
+        let paths = Paths::under(root.join("home"));
         std::env::remove_var("COPHYLAD_COMMAND");
         let cmd = resolve_command(&paths, Some(&install));
         assert_eq!(Path::new(&cmd.program), vdir.join(BUN));
@@ -737,6 +918,20 @@ mod tests {
         let checkout = resolve_command(&paths, None);
         assert!(checkout.program == "bun" || Path::new(&checkout.program).ends_with(Path::new(".bun").join("bin").join(BUN)), "{}", checkout.program);
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn the_daemon_writes_its_own_log_and_its_stdio_goes_beside_it() {
+        let paths = Paths::under(PathBuf::from("rel-home"));
+        assert_eq!(paths.log, Path::new("rel-home").join("data").join("cophylad.log"));
+        assert_eq!(paths.stderr, Path::new("rel-home").join("data").join("cophylad.stderr.log"));
+        let cmd = CophyladCommand { program: "bun".into(), args: vec!["run".into()], cwd: None, env: vec![("A".into(), "1".into())] };
+        let command = daemon_command(&paths, &cmd);
+        let env: Vec<(String, String)> = command.get_envs().filter_map(|(k, v)| Some((k.to_string_lossy().into_owned(), v?.to_string_lossy().into_owned()))).collect();
+        let file = env.iter().find(|(k, _)| k == "COPHYLAD_LOG_FILE").map(|(_, v)| PathBuf::from(v)).expect("COPHYLAD_LOG_FILE");
+        assert!(file.is_absolute(), "{}", file.display());
+        assert!(file.ends_with(Path::new("rel-home").join("data").join("cophylad.log")), "{}", file.display());
+        assert!(env.contains(&("A".into(), "1".into())));
     }
 
     #[test]

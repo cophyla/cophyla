@@ -176,7 +176,7 @@ pub async fn stream_place<R: Runtime>(app: AppHandle<R>, stream: String, x: Opti
 /// Closes a stream's window, or its page beside the view, if either is open. A page beside the
 /// view has no event of its own when it goes, so the host page hears it from here.
 #[tauri::command]
-pub fn stream_close<R: Runtime>(app: AppHandle<R>, stream: String) -> Result<(), String> {
+pub async fn stream_close<R: Runtime>(app: AppHandle<R>, stream: String) -> Result<(), String> {
     if let Some(w) = app.get_webview_window(&label(&stream)?) {
         w.close().map_err(|e| e.to_string())?;
     }

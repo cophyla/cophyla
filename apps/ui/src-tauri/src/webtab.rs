@@ -188,7 +188,7 @@ pub async fn webtab_go<R: Runtime>(app: AppHandle<R>, tab: String, url: Option<S
 
 /// Closes a tab, if it is open. The host page asked, so it hears nothing of it.
 #[tauri::command]
-pub fn webtab_close<R: Runtime>(app: AppHandle<R>, tab: String) -> Result<(), String> {
+pub async fn webtab_close<R: Runtime>(app: AppHandle<R>, tab: String) -> Result<(), String> {
     if let Some(v) = app.get_webview(&label(&tab)?) {
         v.close().map_err(|e| e.to_string())?;
     }

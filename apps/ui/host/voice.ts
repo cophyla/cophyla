@@ -2,7 +2,8 @@
 // the shell's link. The page starts the microphone and the wake word at launch — the shell
 // grants the microphone and lets audio start with no click — and keeps both running while the
 // window is hidden in the tray, so a wake word reaches Cophyla whether or not the app is in
-// front. The talk key comes from the shell as `voice:ptt`; a view draws a talk button of its
+// front. The talk key comes from the shell as `voice:ptt`, with when the user pressed or let it
+// go, which is when the utterance starts and ends; a view draws a talk button of its
 // own and holds `voice.ptt` itself (`talk` in `host.ready`); replies play through the
 // speakers. What the user chose — listening, speaking, the talk key, the microphone — is kept
 // in the page's storage and shown in the Voice section of the host's settings.
@@ -108,7 +109,8 @@ export class DesktopVoice implements VoiceSettings {
    * view holds back until a click (a platform with no autoplay switch) is started on the first.
    */
   async start(): Promise<void> {
-    await this.deps.listen<{ down: boolean }>("voice:ptt", (e) => this.host.ptt(e.down === true));
+    // `at`: when the user pressed or let go, which the shell read off the keyboard (talkkey.rs)
+    await this.deps.listen<{ down: boolean; at?: number }>("voice:ptt", (e) => this.host.ptt(e.down === true, typeof e.at === "number" ? { at: e.at } : {}));
     void this.setTalkKey(this.read(TALK_KEY) ?? defaultTalkKey(this.deps.mac)).catch((e: unknown) => this.log(`talk key: ${message(e)}`));
     await this.startAudio();
   }

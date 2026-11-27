@@ -27,12 +27,19 @@
 // open evicted first. The host page's side is viewhost's MediaHost
 // (packages/viewhost/src/media.ts). The HTTP, the reads and the cache are plain code here, which
 // the tests below drive without a web view or a daemon, the server over a real loopback socket.
+//
+// The same server carries the host page's link socket (page.rs): a WebSocket at
+// `ws://127.0.0.1:<port>/<link secret>/link`, under a secret of its own that no view is ever
+// given, upgraded before the one-request-a-connection path by a 101 written here, and only for a
+// request that names the server's host and comes from the host page's origin (`Origin`).
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::net::Ipv4Addr;
 use std::path::{Path, PathBuf};
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::{Duration, SystemTime};
 
@@ -48,6 +55,9 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::{oneshot, Semaphore};
 use tokio::task::AbortHandle;
+use tokio_tungstenite::tungstenite::handshake::derive_accept_key;
+use tokio_tungstenite::tungstenite::protocol::Role;
+use tokio_tungstenite::WebSocketStream;
 
 use crate::cophylad::Link;
 
@@ -57,6 +67,8 @@ pub const PIECE: u64 = 1_572_864;
 pub const RPC_PREFIX: &str = "media:";
 /// Where the streams are under the server's secret: `/media/<id>/<name>`.
 pub const PATH_PREFIX: &str = "/media/";
+/// Where the host page's link socket is under the link's secret.
+pub const LINK_PATH: &str = "/link";
 /// The disk cache's folder in the app's local data.
 pub const CACHE_DIR: &str = "media-cache";
 /// The most the disk cache holds, counted as the pieces there.
@@ -623,13 +635,24 @@ struct Inner {
     out: Out,
     timeout: Duration,
     server: OnceLock<Server>,
+    page: OnceLock<PageSocket>,
 }
 
 /// The loopback server the media elements fetch from: its port, and this run's secret, the first
-/// segment of every path it serves (128 random bits, in hex).
+/// segment of every path it serves (128 random bits, in hex); and the link socket's own secret.
 struct Server {
     port: u16,
     secret: String,
+    link_secret: String,
+}
+
+/// The session run over each link socket upgraded (page.rs).
+type ServePage = Box<dyn Fn(WebSocketStream<TcpStream>) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
+
+/// What serves the host page's link socket: the origins it may come from, and its session.
+struct PageSocket {
+    origins: Vec<String>,
+    serve: ServePage,
 }
 
 impl Server {
@@ -710,7 +733,7 @@ impl Media {
 
     fn with(dir: Option<PathBuf>, cap: u64, timeout: Duration, out: Out) -> Self {
         let shared = Shared { streams: HashMap::new(), reqs: HashMap::new(), next_req: 1, next_serial: 1, memory: Memory::new(MEMORY_PIECES) };
-        Media(Arc::new(Inner { shared: Mutex::new(shared), disk: dir.map(|d| Arc::new(Mutex::new(Disk::new(d, cap)))), out, timeout, server: OnceLock::new() }))
+        Media(Arc::new(Inner { shared: Mutex::new(shared), disk: dir.map(|d| Arc::new(Mutex::new(Disk::new(d, cap)))), out, timeout, server: OnceLock::new(), page: OnceLock::new() }))
     }
 
     /// The app's: pieces read over the shell's link to cophylad, the disk cache in the app's local
@@ -723,12 +746,22 @@ impl Media {
                 None
             }
         };
-        let app = app.clone();
-        let out: Out = Box::new(move |frame| match app.try_state::<Link>() {
+        let reads = app.clone();
+        let out: Out = Box::new(move |frame| match reads.try_state::<Link>() {
             Some(link) => link.send(frame),
             None => Err("unavailable: no link to cophylad".into()),
         });
         let media = Self::new(dir, out);
+        // the host page's link socket, from the host page alone (or `tauri dev`'s server)
+        let origins = std::iter::once(crate::views::HOST_ORIGIN.to_string()).chain(crate::views::dev_origin(app)).collect();
+        let page_app = app.clone();
+        media.serve_page(origins, move |ws| {
+            let app = page_app.clone();
+            Box::pin(async move {
+                let link = app.state::<Link>();
+                crate::page::serve(&link, ws).await;
+            })
+        });
         match media.bind() {
             Ok(listener) => drop(tauri::async_runtime::spawn(media.clone().run(listener))),
             Err(e) => log::warn!("media: the media server did not start, so no stream opens: {e}"),
@@ -748,17 +781,40 @@ impl Media {
         Some(format!("http://{}/{}{PATH_PREFIX}{id}/{}", server.host(), server.secret, utf8_percent_encode(&name, NAME_SET)))
     }
 
+    /// Where the host page's link socket is, once the server listens and serves it.
+    pub fn link_url(&self) -> Option<String> {
+        let server = self.0.server.get()?;
+        self.0.page.get()?;
+        Some(format!("ws://{}/{}{LINK_PATH}", server.host(), server.link_secret))
+    }
+
+    /// Serves the host page's link socket from now on: a socket from one of `origins`, upgraded,
+    /// is handed to `serve`, and the connection lasts as long as what it returns runs. Once.
+    pub fn serve_page(&self, origins: Vec<String>, serve: impl Fn(WebSocketStream<TcpStream>) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync + 'static) {
+        let _ = self.0.page.set(PageSocket { origins, serve: Box::new(serve) });
+    }
+
     /// Binds the media server on a loopback port the system picks, with a secret of its own for
-    /// the run; `run` serves it. Once a run.
+    /// the run and another for the link socket; `run` serves it. Once a run.
     fn bind(&self) -> io::Result<std::net::TcpListener> {
         let listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
         listener.set_nonblocking(true)?;
         let port = listener.local_addr()?.port();
-        let mut secret = [0u8; 16];
-        getrandom::fill(&mut secret).map_err(|e| io::Error::other(e.to_string()))?;
-        let secret = secret.iter().map(|b| format!("{b:02x}")).collect();
-        self.0.server.set(Server { port, secret }).map_err(|_| io::Error::other("the media server listens already"))?;
+        let secret = || -> io::Result<String> {
+            let mut bytes = [0u8; 16];
+            getrandom::fill(&mut bytes).map_err(|e| io::Error::other(e.to_string()))?;
+            Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
+        };
+        self.0.server.set(Server { port, secret: secret()?, link_secret: secret()? }).map_err(|_| io::Error::other("the media server listens already"))?;
         Ok(listener)
+    }
+
+    /// Binds the server and serves it on the app's async runtime, for another module's tests.
+    #[cfg(test)]
+    pub fn listen(&self) -> io::Result<()> {
+        let listener = self.bind()?;
+        drop(tauri::async_runtime::spawn(self.clone().run(listener)));
+        Ok(())
     }
 
     /// Serves the media server's connections, each in a task of its own, `CONNECTIONS` at most.
@@ -789,7 +845,8 @@ impl Media {
         }
     }
 
-    /// One connection: its request read, answered, and the connection closed.
+    /// One connection: its request read, answered, and the connection closed; or, for the host
+    /// page's link socket, upgraded and served for as long as the socket is open.
     async fn connection(&self, mut stream: TcpStream) {
         let Some(server) = self.0.server.get() else { return };
         let (response, head_only) = match tokio::time::timeout(HEAD_TIMEOUT, read_head(&mut stream)).await {
@@ -797,13 +854,27 @@ impl Media {
             Ok(Err(status)) => (plain(status, "bad request"), false),
             Ok(Ok(bytes)) => match parse_head(&bytes) {
                 Err(why) => (plain(StatusCode::BAD_REQUEST, why), false),
-                Ok(head) => {
-                    let response = match route(&head, &server.secret, server.port) {
-                        Ok(path) => self.serve(&head.method, path, head.range.as_deref()).await,
-                        Err(refused) => refused,
-                    };
-                    (response, head.method == Method::HEAD)
-                }
+                Ok(head) => match upgrade(&head, server, self.0.page.get().map(|p| p.origins.as_slice())) {
+                    Some(Ok(accept)) => {
+                        let switching = format!("HTTP/1.1 101 Switching Protocols\r\nupgrade: websocket\r\nconnection: Upgrade\r\nsec-websocket-accept: {accept}\r\n\r\n");
+                        if let Err(e) = stream.write_all(switching.as_bytes()).await {
+                            log::debug!("page socket: the upgrade not taken: {e}");
+                            return;
+                        }
+                        let Some(page) = self.0.page.get() else { return };
+                        let ws = WebSocketStream::from_raw_socket(stream, Role::Server, None).await;
+                        (page.serve)(ws).await;
+                        return;
+                    }
+                    Some(Err(refused)) => (refused, false),
+                    None => {
+                        let response = match route(&head, &server.secret, server.port) {
+                            Ok(path) => self.serve(&head.method, path, head.range.as_deref()).await,
+                            Err(refused) => refused,
+                        };
+                        (response, head.method == Method::HEAD)
+                    }
+                },
             },
         };
         let write = async {
@@ -1204,13 +1275,18 @@ impl Media {
 }
 
 /// A request's head as the media server reads it: its method and target, and of its fields the
-/// `Host` and the first `Range`.
-#[derive(Debug, PartialEq, Eq)]
+/// `Host`, the first `Range`, and what a WebSocket upgrade says (the first of each).
+#[derive(Debug, Default, PartialEq, Eq)]
 struct Head {
     method: Method,
     target: String,
     host: Option<String>,
     range: Option<String>,
+    origin: Option<String>,
+    upgrade: Option<String>,
+    connection: Option<String>,
+    ws_key: Option<String>,
+    ws_version: Option<String>,
 }
 
 /// Reads a request's head off a connection: the bytes before its blank line, `HEAD_MAX` at most.
@@ -1253,7 +1329,7 @@ fn parse_head(bytes: &[u8]) -> Result<Head, &'static str> {
     if !target.starts_with('/') {
         return Err("a bad target");
     }
-    let (mut host, mut range) = (None, None);
+    let mut head = Head { method, target: target.to_string(), ..Head::default() };
     for field in lines {
         let Some((name, value)) = field.split_once(':') else { return Err("a bad field") };
         if name.is_empty() || name.contains([' ', '\t']) {
@@ -1261,14 +1337,51 @@ fn parse_head(bytes: &[u8]) -> Result<Head, &'static str> {
         }
         let value = value.trim_matches([' ', '\t']).to_string();
         if name.eq_ignore_ascii_case("host") {
-            if host.replace(value).is_some() {
+            if head.host.replace(value).is_some() {
                 return Err("two hosts");
             }
-        } else if name.eq_ignore_ascii_case("range") && range.is_none() {
-            range = Some(value);
+            continue;
+        }
+        let slot = match name.to_ascii_lowercase().as_str() {
+            "range" => &mut head.range,
+            "origin" => &mut head.origin,
+            "upgrade" => &mut head.upgrade,
+            "connection" => &mut head.connection,
+            "sec-websocket-key" => &mut head.ws_key,
+            "sec-websocket-version" => &mut head.ws_version,
+            _ => continue,
+        };
+        if slot.is_none() {
+            *slot = Some(value);
         }
     }
-    Ok(Head { method, target: target.to_string(), host, range })
+    Ok(head)
+}
+
+/// Whether a request is for the host page's link socket, and how it is answered: none for a
+/// request that is not (it is served as a media request, and refused there); the key's accept for
+/// an upgrade of one at `/<link secret>/link` that names the server's host, comes from one of
+/// `origins` (none while nothing serves the socket) and asks a WebSocket of version 13; a refusal
+/// otherwise (421 for another host, 403 for another origin, 400 for anything that is no upgrade).
+fn upgrade(head: &Head, server: &Server, origins: Option<&[String]>) -> Option<Result<String, Response<Vec<u8>>>> {
+    let path = head.target.split('?').next().unwrap_or_default();
+    let rest = path.strip_prefix('/').and_then(|p| past_secret(p, &server.link_secret))?;
+    if rest != LINK_PATH {
+        return None;
+    }
+    if head.host.as_deref() != Some(server.host().as_str()) {
+        return Some(Err(plain(StatusCode::MISDIRECTED_REQUEST, "not this server's host")));
+    }
+    let Some(origins) = origins else { return Some(Err(plain(StatusCode::NOT_FOUND, "not found"))) };
+    if !head.origin.as_deref().is_some_and(|o| origins.iter().any(|allowed| allowed == o)) {
+        return Some(Err(plain(StatusCode::FORBIDDEN, "not the host page")));
+    }
+    let token = |field: &Option<String>, want: &str| field.as_deref().is_some_and(|v| v.split(',').any(|t| t.trim().eq_ignore_ascii_case(want)));
+    let Some(key) = head.ws_key.as_deref().filter(|k| !k.is_empty()) else { return Some(Err(plain(StatusCode::BAD_REQUEST, "no websocket key"))) };
+    if head.method != Method::GET || !token(&head.upgrade, "websocket") || !token(&head.connection, "upgrade") || head.ws_version.as_deref() != Some("13") {
+        return Some(Err(plain(StatusCode::BAD_REQUEST, "not a websocket upgrade")));
+    }
+    Some(Ok(derive_accept_key(key.as_bytes())))
 }
 
 /// The rest of `path` past `secret`, compared in a time that does not tell how much of it matched.
@@ -1993,13 +2106,17 @@ mod tests {
     }
 
     fn head(target: &str, host: Option<&str>) -> Head {
-        Head { method: Method::GET, target: target.into(), host: host.map(str::to_string), range: None }
+        Head { method: Method::GET, target: target.into(), host: host.map(str::to_string), ..Head::default() }
     }
 
     #[test]
     fn a_request_head_is_read() {
         let got = parse_head(b"GET /s3cret/media/a/b.mp4 HTTP/1.1\r\nhost: 127.0.0.1:5000\r\nAccept: */*\r\nRANGE:bytes=0-\r\nRange: bytes=5-\r\nUser-Agent: x : y").unwrap();
-        assert_eq!(got, Head { method: Method::GET, target: "/s3cret/media/a/b.mp4".into(), host: Some("127.0.0.1:5000".into()), range: Some("bytes=0-".into()) });
+        assert_eq!(got, Head { method: Method::GET, target: "/s3cret/media/a/b.mp4".into(), host: Some("127.0.0.1:5000".into()), range: Some("bytes=0-".into()), ..Head::default() });
+        let got = parse_head(b"GET /k/link HTTP/1.1\r\nHost: 127.0.0.1:5000\r\nOrigin: http://tauri.localhost\r\nUpgrade: websocket\r\nConnection: keep-alive, Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\nOrigin: http://other").unwrap();
+        assert_eq!(got.origin.as_deref(), Some("http://tauri.localhost"));
+        assert_eq!((got.upgrade.as_deref(), got.connection.as_deref()), (Some("websocket"), Some("keep-alive, Upgrade")));
+        assert_eq!((got.ws_key.as_deref(), got.ws_version.as_deref()), (Some("dGhlIHNhbXBsZSBub25jZQ=="), Some("13")));
         let got = parse_head(b"HEAD / HTTP/1.0").unwrap();
         assert_eq!((got.method, got.host, got.range), (Method::HEAD, None, None));
         for bad in [
@@ -2035,6 +2152,45 @@ mod tests {
         assert_eq!(past_secret("abc/x", "abc"), Some("/x"));
         assert_eq!(past_secret("abd/x", "abc"), None);
         assert_eq!(past_secret("ab", "abc"), None);
+    }
+
+    #[test]
+    fn only_the_host_pages_upgrade_at_the_links_secret_is_taken() {
+        let server = Server { port: 5000, secret: "0123456789abcdef0123456789abcdef".into(), link_secret: "fedcba9876543210fedcba9876543210".into() };
+        let origins = vec!["http://tauri.localhost".to_string()];
+        let ws = |target: &str, origin: Option<&str>| Head {
+            method: Method::GET,
+            target: target.into(),
+            host: Some("127.0.0.1:5000".into()),
+            origin: origin.map(str::to_string),
+            upgrade: Some("websocket".into()),
+            connection: Some("Upgrade".into()),
+            ws_key: Some("dGhlIHNhbXBsZSBub25jZQ==".into()),
+            ws_version: Some("13".into()),
+            ..Head::default()
+        };
+        let link = "/fedcba9876543210fedcba9876543210/link";
+        // RFC 6455's own example of a key and its accept
+        assert_eq!(upgrade(&ws(link, Some("http://tauri.localhost")), &server, Some(&origins)).unwrap().unwrap(), "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=");
+        let status = |head: &Head, origins: Option<&[String]>| upgrade(head, &server, origins).map(|r| r.map(|_| StatusCode::SWITCHING_PROTOCOLS).unwrap_or_else(|e| e.status()));
+        for origin in [None, Some("null"), Some("http://view.localhost"), Some("http://127.0.0.1:5000"), Some("http://tauri.localhost.example.com")] {
+            assert_eq!(status(&ws(link, origin), Some(&origins)), Some(StatusCode::FORBIDDEN), "{origin:?}");
+        }
+        let mut other_host = ws(link, Some("http://tauri.localhost"));
+        other_host.host = Some("localhost:5000".into());
+        assert_eq!(status(&other_host, Some(&origins)), Some(StatusCode::MISDIRECTED_REQUEST));
+        let mut plain_get = ws(link, Some("http://tauri.localhost"));
+        plain_get.upgrade = None;
+        assert_eq!(status(&plain_get, Some(&origins)), Some(StatusCode::BAD_REQUEST));
+        let mut old = ws(link, Some("http://tauri.localhost"));
+        old.ws_version = Some("8".into());
+        assert_eq!(status(&old, Some(&origins)), Some(StatusCode::BAD_REQUEST));
+        // nothing serves it yet
+        assert_eq!(status(&ws(link, Some("http://tauri.localhost")), None), Some(StatusCode::NOT_FOUND));
+        // the media secret, another path, or a wrong secret: no link request, left to the media route
+        for target in ["/0123456789abcdef0123456789abcdef/link", "/fedcba9876543210fedcba9876543210/media/a/b", "/fedcba9876543210fedcba9876543211/link", "/link"] {
+            assert_eq!(status(&ws(target, Some("http://tauri.localhost")), Some(&origins)), None, "{target}");
+        }
     }
 
     #[test]
