@@ -63,8 +63,6 @@ import type { HandleTable } from "./text.ts";
 
 /** How many posts a group keeps. */
 export const POSTS_MAX = 20_000;
-/** How many agents a group takes. */
-export const AGENTS_MAX = 24;
 /** How many posts `read_group` shows at once. */
 const READ_LIMIT = 50;
 /** The characters of posts one `read_group` answer carries, about; and where a long post in a list is cut, which `posts` shows whole. */
@@ -765,7 +763,6 @@ export class Groups {
       }
       throw new RpcError("conflict", `${already.join(", ")} ${already.length === 1 ? "is" : "are"} in #${g.name} already`);
     }
-    if (g.members.filter((m) => m.kind === "agent").length > AGENTS_MAX) throw new RpcError("invalid", `a group takes ${AGENTS_MAX} agents at most`);
     this.rows.put(g);
     const newSides = added.filter((m) => m.kind === "person" && !this.mine(m)).map((m) => m.owner);
     // one snapshot for every side, first: the new ones take the group in from it, everyone added among it
@@ -2452,7 +2449,6 @@ export class Groups {
         else if (em.kind === "person" && em.owner !== me.owner) this.log.info("a group handed over holds a person who is not this user's teammate: left out", { id: s.id, from: t.user, user: em.user });
         continue;
       }
-      if (em.kind === "agent" && g.members.filter((x) => x.kind === "agent").length >= AGENTS_MAX) continue;
       const m = this.fromEntryMember(em, g.n);
       if (m.owner !== me.owner && m.owner !== owner && !g.sides[m.owner]) {
         const other = teams!.teammateOf(m.owner)!;
@@ -2611,7 +2607,6 @@ export class Groups {
           if (g.members.some((m) => m.key === em.key)) continue;
           if (em.owner === me.owner || (em.owner !== owner && !g.sides[em.owner])) continue;
           if (!this.trusted(em, owner)) continue;
-          if (em.kind === "agent" && g.members.filter((m) => m.kind === "agent").length >= AGENTS_MAX) continue;
           g.members.push(this.fromEntryMember(em, g.n));
         }
         this.rows.put(g);
@@ -2673,7 +2668,6 @@ export class Groups {
           else if (third) this.log.info("a group's newcomer is not this user's teammate: left out", { group: g.id, from: g.sides[owner]?.user, user: em.user });
           break;
         }
-        if (em.kind === "agent" && g.members.filter((m) => m.kind === "agent").length >= AGENTS_MAX) break;
         if (third) {
           const other = this.deps.teams?.()?.teammateOf(em.owner);
           if (!other) break;

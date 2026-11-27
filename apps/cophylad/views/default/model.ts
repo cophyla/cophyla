@@ -6903,7 +6903,7 @@ export interface MemberChip {
   notify?: GroupNotify;
   /** This side's user. */
   me: boolean;
-  /** Remove is offered: on one's own agents, and on any agent for the group's maker, while the group runs. */
+  /** Remove is offered: on one's own agents, and on any agent for the group's maker, while the group runs; one whose session ended too. */
   removable: boolean;
   title: string;
 }
@@ -6959,7 +6959,7 @@ function groupChips(state: Pick<ViewState, "sessions" | "focus">, g: Group, now:
       mine: m.mine === true,
       notify: m.notify,
       me: false,
-      removable: open && !m.gone && (m.mine === true || maker),
+      removable: open && (m.mine === true || maker),
       title: title.join("\n"),
     };
   });

@@ -128,7 +128,7 @@ export const GroupSnapshot = z.object({
   /** When its name, purpose or setting last changed. */
   updatedAt: Timestamp.optional(),
   ended: z.object({ at: Timestamp, by: z.string().max(64) }).optional(),
-  members: z.array(GroupEntryMember).max(64),
+  members: z.array(GroupEntryMember),
   posts: z.array(GroupEntryPost).max(200),
   taken: z.record(z.string().max(120), z.number().int().nonnegative()).optional(),
   /** The team it belongs to, and whether it is the team's own chat; a side takes these only for a team its user is in. */

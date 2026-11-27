@@ -1361,7 +1361,7 @@ export const clientRequests = {
   },
   /** A new group chat with these agents in it, made by this side's user, who is in it too. `notify` is what an agent added starts with: tags only without it. */
   "group.create": {
-    params: z.object({ name: z.string().trim().min(1).max(80), purpose: z.string().trim().max(300).optional(), notify: GroupNotify.optional(), members: z.array(GroupMemberRef).max(32) }),
+    params: z.object({ name: z.string().trim().min(1).max(80), purpose: z.string().trim().max(300).optional(), notify: GroupNotify.optional(), members: z.array(GroupMemberRef) }),
     result: z.object({ group: Group }),
   },
   /** A group's name, purpose, or the setting new agents start with; any person in it may change them. An empty purpose clears it. */
@@ -1430,7 +1430,7 @@ export const clientRequests = {
    * everyone else: a teammate whose side does not hold every other person in it as a teammate is
    * refused.
    */
-  "group.member.add": { params: z.object({ group: GroupId, members: z.array(GroupMemberRef).min(1).max(32) }), result: z.object({ group: Group }) },
+  "group.member.add": { params: z.object({ group: GroupId, members: z.array(GroupMemberRef).min(1) }), result: z.object({ group: Group }) },
   /** Takes a member out: one of this side's own agents, or anyone for the group's maker. */
   "group.member.remove": { params: z.object({ group: GroupId, member: GroupMemberKey }), result: z.object({ group: Group }) },
   /** How one of this side's own agents is told of the group's posts: every post, or tags only. */

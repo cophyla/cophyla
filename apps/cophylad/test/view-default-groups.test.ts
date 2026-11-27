@@ -258,7 +258,7 @@ describe("group chats in the view", () => {
     expect(unreadBy(g, { n: 5, from: { kind: "cophyla" }, mentions: [{ all: "users" }] })).toEqual([]);
   });
 
-  test("the members' chips: busy or idle from the session, focus, held, unread, Every post | Tags only and Remove on one's own", () => {
+  test("the members' chips: busy or idle from the session, focus, held, unread, Every post | Tags only and Remove on one's own, ended or not", () => {
     const state = connected();
     apply(state, { type: "session.state", params: session(A, { status: "busy" }) });
     apply(state, { type: "session.state", params: session(B, { harness: "codex" }) });
@@ -280,6 +280,14 @@ describe("group chats in the view", () => {
     // the maker may take a teammate's agent out; a member who did not make it, only their own
     expect(chips[3]).toMatchObject({ mine: false, removable: true });
     expect(memberChips(state, group({ by: "bob", members: [me, web, bobs] }), NOW).map((c) => c.removable)).toEqual([false, true, false]);
+    // one whose session ended is taken out as well: one's own, and a teammate's for the maker
+    expect(chips[4]).toMatchObject({ status: "gone", removable: true });
+    const ended = memberChips(state, group({ by: "bob", members: [me, { ...web, gone: true }, { ...bobs, gone: true }] }), NOW);
+    expect(ended.map((c) => [c.status, c.removable])).toEqual([
+      ["person", false],
+      ["gone", true],
+      ["gone", false],
+    ]);
     // an ended group takes no one out
     expect(memberChips(state, group({ ended: { at: NOW, by: "alice" } }), NOW).some((c) => c.removable)).toBe(false);
   });

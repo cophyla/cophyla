@@ -4,12 +4,13 @@
 // names no one refused); a tag sends one notice, not the post, and no second one until the
 // agent reads; read_group's words and read point; a reply tags the writer; an agent told of
 // every post gets them gathered once its turn is over; the limits; a thumbs up wakes no one;
-// a member whose session ended is gone and told on its return; focus holds messages and a
+// a member whose session ended is gone and told on its return; any number of agents, and one
+// ended taken out stays out once resumed; focus holds messages and a
 // group's notices, tells the sender at once, and hands everything over when the turn ends; the
 // user's posts, and where the rail puts a group.
 
 import { describe, expect, test } from "bun:test";
-import { newId } from "@cophyla/protocol";
+import { clientRequests, GroupSnapshot, newId } from "@cophyla/protocol";
 import type { Session } from "@cophyla/protocol";
 import type { DeliverOptions, EnvelopeInfo } from "../src/agentmsg/envelope.ts";
 import { Focuses } from "../src/agentmsg/focus.ts";
@@ -377,6 +378,36 @@ describe("a group chat", () => {
       expect(r.delivered.find((d) => d.session === web.id)!.text).toContain("tagged you in #release");
       expect(r.groups.list()[0]!.members.find((m) => m.key === `agent:${web.id}`)).not.toHaveProperty("gone");
       void g;
+    } finally {
+      r.stop();
+    }
+  });
+
+  test("a group takes any number of agents, and one whose session ended is taken out and stays out once resumed", async () => {
+    const crowd = Array.from({ length: 30 }, (_, i) => sess("codex", `C:/code/app${i}`));
+    const r = rig(crowd);
+    try {
+      // more than one request took before, in one go
+      const refs = crowd.map((s) => ({ session: s.id }));
+      expect(clientRequests["group.create"].params.safeParse({ name: "crowd", members: refs }).success).toBe(true);
+      expect(clientRequests["group.member.add"].params.safeParse({ group: "grp_01ARZ3NDEKTSV4RRFFQ69G5GR1", members: refs }).success).toBe(true);
+      // and the copy a teammate's side is handed holds them all
+      const member = (i: number) => ({ kind: "agent", key: `agent:${crowd[i % 30]!.id}`, session: crowd[i % 30]!.id, owner: "usr_ME", user: "ferit", name: `app${i}`, harness: "codex", notify: "tags", addedBy: "ferit", addedAt: 1 });
+      const snapshot = { id: "grp_01ARZ3NDEKTSV4RRFFQ69G5GR1", name: "crowd", by: "ferit", notify: "tags", createdAt: 1, members: Array.from({ length: 100 }, (_, i) => member(i)), posts: [] };
+      expect(GroupSnapshot.safeParse(snapshot).success).toBe(true);
+      const g = await r.groups.create({ name: "crowd", members: refs.slice(0, 20) });
+      await r.groups.addMembers(g.id, refs.slice(20));
+      const agents = () => r.groups.list()[0]!.members.filter((m) => m.kind === "agent");
+      expect(agents()).toHaveLength(30);
+      const out = crowd[0]!;
+      r.set(out, { status: "ended" });
+      expect(agents().find((m) => m.key === `agent:${out.id}`)).toMatchObject({ gone: true });
+      const after = r.groups.removeMember(g.id, `agent:${out.id}`);
+      expect(after.members.some((m) => m.key === `agent:${out.id}`)).toBe(false);
+      // its session back: it is not put in again
+      r.set(out, { status: "idle" });
+      expect(agents()).toHaveLength(29);
+      expect(agents().some((m) => m.key === `agent:${out.id}`)).toBe(false);
     } finally {
       r.stop();
     }
