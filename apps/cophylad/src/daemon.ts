@@ -334,6 +334,8 @@ export interface Daemon {
   paths: Paths;
   config: Config;
   store: Store;
+  /** The background jobs' scheduler and the worker they read on (a kit forces the jobs). */
+  maintenance: Maintenance;
   /** The daemon's log: what the entry point writes a failure nothing caught to. */
   log: Logger;
   identity: NodeIdentity;
@@ -2476,6 +2478,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     paths: p,
     config,
     store,
+    maintenance,
     log,
     identity,
     node,

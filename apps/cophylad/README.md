@@ -50,7 +50,10 @@ again.
 | Directory | Milestone | Role |
 |---|---|---|
 | `config/` | 0 | `config.toml` schema with defaults, the user data directory layout |
-| `store/` | 0, 6 | SQLite: the tables from architecture.md, migrations, row ↔ entity mapping; `index/` is the recall index: chunks written with every message and session event and on each memory change, FTS5 over their text, int8 vectors for prose from the embedding model under `models/` (`embed.ts`, `queue.ts`), both legs fused in `recall.ts`, the pre-index rows swept by `backfill.ts` |
+| `store/` | 0, 6 | SQLite: the tables from architecture.md, migrations, row ↔ entity mapping; the main connection's plan guard and slow-statement log (`guard.ts`); the clears read in from older events once (`clears.ts`); `index/` is the recall index: chunks written with every message and session event and on each memory change, FTS5 over their text, int8 vectors for prose from the embedding model under `models/` (`embed.ts`; `queue.ts` drains `embed_queue`), both legs fused in `recall.ts`, the pre-index rows swept by `backfill.ts`, the model, the vectors and recall on the index worker (`worker.ts`, `remote.ts`) |
+| `background/` | — | the background worker, its own read-only connection to the store with the jobs of `jobs.ts` (long reads in bounded ranges, the passive checkpoints, the machine's process list, the spend backfill's reading, snapshots), `read` calls ahead of `bulk`, each at a lower OS priority (`worker.ts`, `client.ts`, inline for a store with no file); the scheduler that paces background jobs in 8 ms slices and holds them while the user talks or the CPU is critical (`scheduler.ts`); the store's upkeep on it (`maintenance.ts`) |
+| `watchdog/` | — | the event-loop watchdog: the main thread's beat and current task in shared memory (`task.ts`), a worker that logs a stall while it lasts and when it ends (`worker.ts`), the loop's lag for the metrics samples (`index.ts`) |
+| `os/` | — | how Windows schedules the daemon's threads and processes: background mode and priorities per thread, the EcoQoS opt-out (`priority.ts`) |
 | `gate/` | 0 | policy per risk class with remembered answers, asks, the audit table |
 | `api/` | 0, 1, 6, 8, 12 | WebSocket server, token auth on `hello`, JSON-RPC dispatch through the gate, the `/hooks/*` ingress; `server.ts` serves one listener and a node runs one or two, both registering into one `clients.ts` registry, and accepts a relay tunnel as a socket of the `cloud` kind (`acceptTunnel`); `agents.ts` is `/mcp/agents`, where every session's `cophyla-agents` shim hands its lines; `tls.ts` makes the node's own certificate and keeps its key across re-makes, `pairing.ts` the six-digit code, `tickets.ts` a view's files under the frame policy, `static.ts` the built controller app; a limited client's welcome, broadcasts and lists cut by the protocol's filter tables, and `invite.redeem` answered before `hello` on the LAN listener or an invite's tunnel |
 | `grants/` | 17 | every credential that reaches this node from outside, a phone's or a node's, with its own key and access (`store.ts`, over the `kv` namespaces in `namespaces.ts`, the paired phones of an older install moved in place), the one timer that ends what runs out (`clock.ts`), `data/link.json` (`link-file.ts`), phone invites and their redemption (`phones.ts`), and `grant.invite`, `grant.list`, `grant.revoke`, `node.join`, `node.leave` and `node.accountJoin` (`methods.ts`); an invite minted for a machine of the account opens for that machine alone (`forNode`) |
@@ -72,7 +75,7 @@ again.
 | `assistant/` | 21 | the session the chat runs in, on the user's own Claude Code or Codex account (`index.ts`): which harness and account, started and met again through a host, a user's message and the brain's wakes typed in one at a time, a user's message joining whatever turn runs, the turn told to the brain as it goes, what the brain says the session is told cut into parts a harness carries whole (`context.ts`); `claude.ts` is the CLI's command line and its three files, `codex.ts` a thread on an app-server of cophylad's own, `mcp-main.ts` the `cophyla` MCP server the CLI runs, which only forwards to the daemon |
 | `update/` | 4, 8 | the public release feed read on a schedule (`feed.ts`: signed, this OS/arch/channel, inside our protocol version), downloads checked by size and hash (`download.ts`), platform versions staged behind the `staged` pointer (`platform.ts`), brain releases under `data/brain/` verified before every spawn (`brain.ts`), voice models unpacked under `data/models/<name>/<version>/` and checked against their own manifest (`models.ts`), and `update.check`/`update.apply`/`update.state` (`index.ts`); the release keys' public halves in `keys.ts` |
 | `voice/` | 8, 14 | the three stages behind engine interfaces (`engines.ts`) with the local ones beside them — `openwakeword.ts` (the sessions; the streaming pipeline is `@cophyla/wake`'s, which the phone runs too), `silero.ts` (on onnxruntime-node, which ships), `nemotron.ts`, `sherpa-stt.ts` (Moonshine and Whisper, read whole), `sherpa-tts.ts` (Piper, Kokoro and Supertonic, with `pieces.ts` cutting a reply into what each makes whole), `chatterbox.ts` — assembled by `local.ts` and `fake.ts`, the transcription and speech engines running in the speech process (`speech-process.ts` starts it for a turn and kills it after; `speech-worker.ts` is the process), and the online ones over the `stt` and `tts` routes (`online.ts`, with `wav-stream.ts`; `live.ts` streams an utterance as it is said, `gemini-live.ts` over the user's own key); `catalog.ts` names what each local engine needs, where it comes from and its licences, and `install.ts` installs one when asked; `prefs.ts` keeps the engines and voice the app picked; `runtime.ts` fixes the ONNX load order, `affinity.ts` finds the performance cores, `models.ts` and `manifest.ts` resolve and check a model directory, `conversation.ts` is the per-controller state machine, `compose.ts` turns blocks into speakable text with a lead-in for each quote, and `index.ts` is the module the daemon holds |
-| `sidecars/` | 8 | an external process supervised: a free loopback port, a health poll, restart with backoff, a rotated log under `data/sidecars/`, the daemon's own CPU mask (`index.ts`); `tts-py.ts` builds what ships as sources — `uv`, the environment, the locked requirements, the weights — each step marked so an interrupted run resumes, each reported as `voice.setup` |
+| `sidecars/` | 8 | an external process supervised: a free loopback port, a health poll, restart with backoff, a buffered and rotated log under `data/sidecars/`, the performance cores' mask `[voice] cpu_affinity` gives (`index.ts`); `tts-py.ts` builds what ships as sources — `uv`, the environment, the locked requirements, the weights — each step marked so an interrupted run resumes, each reported as `voice.setup` |
 | `metrics/` | 9 | the machine sampled without a shell: the engines behind one interface (`windows.ts` through `bun:ffi` and `NtQuerySystemInformation`, `linux.ts` over `/proc`, `macos.ts` over libproc, `nvml.ts` for an NVIDIA GPU, `windows-gpu.ts` for any other on Windows (the GPU counters Task Manager reads, through PDH: each adapter's busiest engine, its dedicated memory in use and each process's, the adapters named and sized by DXGI), taking over where NVML is not there, and `apple-gpu.ts` for a Mac's (IOKit's IOAccelerator statistics: utilisation and the unified memory it holds, no per-process share), `fake.ts` for tests), owners from the process tree (`owners.ts`), the sample built from two raw readings (`sampler.ts`), pressure with hysteresis (`pressure.ts`), per-minute rollups (`rollup.ts`), the price table and the token counters (`prices.ts`, `tokens.ts`), each login's plan limits from Claude's usage endpoint, Codex's rollouts or Muse's host (`limits.ts`), each subscriber's share of the samples with the counts it skipped carried on and the rows summed per owner (`delivery.ts`), and the module with its ring, its subscribers and in-process watchers (a metric listener's, which move the rate and read no plan limits), its adaptive rate and a range's spend (`index.ts`) |
 | `remote/` | 10 | the remote desktop: the host found or installed with the package manager (`install.ts`), its API with the cookie login, the blind PIN and the viewer grant (`host.ts`), the Windows service or a spawned host (`service.ts`), moonlight-qt driven by its CLI (`moonlight.ts`), the moonlight-web sidecar fetched from its pinned release (`manifest.ts`, `web.ts`), the tickets and the reverse proxy under `/remote` (`proxy.ts`), the OS screenshot (`screenshot.ts`), and the module with `remote.state` and the viewers (`index.ts`) |
 | `transfers/` | 25 | files and folders sent between the user's machines, kept and pulled by the machine they go to (`index.ts`: the rows in `transfers.json`, one running per machine, the partials and their first free names, resuming after a drop, the relay's confirm over 1 GiB); what a path holds, walked without following a link (`tree.ts`); a file read into a pipe from an offset (`source.ts`) and written from one (`sink.ts`); `transfer.*` (`methods.ts`) |
@@ -100,6 +103,42 @@ the model is loaded), and stops before the store closes. `restart.ts` serves `no
 refused while busy unless forced, then the stop, and a successor started by the daemon itself
 unless the desktop app on this machine is attached to start one; `main.ts` holds a successor
 back until its predecessor's pid is gone.
+
+## Responsiveness
+
+The daemon's thread answers every client, voice packet and hook, and under a loaded machine
+anything it does in one go is time they all wait. What it is held to:
+
+1. The main thread is a control plane: every synchronous step is bounded, ten milliseconds the
+   target.
+2. A statement on the main connection is bounded by an index. `store/guard.ts` plans each one
+   the first time it is prepared; a full scan of a table off the small list, or of a whole index
+   of a big one, is a violation (logged, and thrown under `COPHYLA_STRICT_SQL=1`, which the test
+   preload sets, so it fails the suite where it was written). A scan bounded by its own
+   `LIMIT`, of a virtual table or a partial index, or annotated `/* scan-ok: reason */` passes.
+   A statement past 20 ms is logged with its plan.
+3. Heavy reads, CPU work and blocking system calls run on long-lived workers at a lower OS
+   priority (`background/`, the index worker); writes stay on the main connection, the single
+   writer, in small batches. A worker is made once: Bun on Windows never frees a terminated one,
+   and one that loaded onnxruntime-node is never terminated at all (Bun panics tearing it down).
+4. Periodic work is incremental: work-queue tables (`embed_queue`, `session_clears`,
+   `metrics_spend`) and watermarks in `meta`, never a rescan.
+5. Background work yields to interactive work: the scheduler's slices, held while a conversation
+   listens or transcribes and while the CPU is critical, for a bounded time.
+6. Real-time input carries its own timeline (a frame's sequence and capture time, a press's and
+   a release's time); nothing is inferred from when it arrived.
+7. A UI thread carries no data-plane traffic and makes no blocking system call (the desktop
+   app's side, `apps/ui`).
+8. Stalls, slow statements and long jobs are logged with what was running, in rotated logs:
+   started by a spawner that names it in `COPHYLAD_LOG_FILE`, the daemon writes and rotates
+   `data/cophylad.log` itself (20 MB, five kept), its stderr going to `cophylad.stderr.log`.
+
+The store runs WAL with `synchronous = NORMAL`, a 32 MB page cache on the main connection (8 MB
+on a worker's), `journal_size_limit` 64 MB and `PRAGMA optimize` at open and hourly; with the
+background worker running, the main connection does no checkpoint of its own and the worker
+runs a passive one every few seconds. The audit is kept 90 days (`[store] audit_retention_days`),
+dropped a batch at a time; a stored minute of metrics folds each session's and sidecar's tree
+into one row and keeps the twenty busiest other processes by CPU and by memory.
 
 ## Sessions
 
@@ -1051,7 +1090,10 @@ a time.
 
 ## Tests
 
-`bun test apps/cophylad` runs the hermetic suite. `test/foundation.test.ts` is milestone 0's
+`bun test apps/cophylad` runs the hermetic suite, with the store's plan guard strict
+(`bunfig.toml` preloads `test/preload.ts`); a statement a test prepares itself is not checked.
+Under test a daemon runs its background jobs inline and starts no watchdog, unless it asks
+(`backgroundWorker`, `watchdog`): a suite starts hundreds of daemons in one process. `test/foundation.test.ts` is milestone 0's
 "done when" over a real socket; `test/attach.test.ts` is milestone 1's, over the socket with a
 fake Claude registry and hook posts, no harness; `test/brain.test.ts` is milestone 3's, over
 the socket with a scripted fake brain (`test/fakes/brain.ts`), a fake ACP agent

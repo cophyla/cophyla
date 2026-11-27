@@ -111,8 +111,8 @@ describe("metrics rollup", () => {
     ...extra,
   });
 
-  test("averages the machine and the processes, sums the tokens, trims to owned plus five others", () => {
-    const others = Array.from({ length: 8 }, (_, i) => ({ pid: 500 + i, parent: 1, name: `o${i}`, cpu: i, memory: 1, owner: { kind: "other" } as const }));
+  test("averages the machine and the processes, sums the tokens, keeps Cophyla's own and the twenty busiest others", () => {
+    const others = Array.from({ length: 25 }, (_, i) => ({ pid: 500 + i, parent: 1, name: `o${i}`, cpu: i, memory: 1, owner: { kind: "other" } as const }));
     const minute = minuteOf(1_700_000_000_000);
     const a = sample(minute + 1000, 10, { gpu: [{ name: "g", util: 10, vramUsed: 100, vramTotal: 1000 }], profiles: { [PROFILE]: { in: 1, out: 1, cached: 1, cost: 0.5 } } });
     const b = sample(minute + 2000, 30, { gpu: [{ name: "g", util: 30, vramUsed: 300, vramTotal: 1000 }], processes: [{ pid: 20, parent: 1, name: "bun", cpu: 30, memory: 300, owner: { kind: "platform" } }, ...others], profiles: { [PROFILE]: { in: 2, out: 2, cached: 2 } } });
@@ -124,9 +124,9 @@ describe("metrics rollup", () => {
     expect(r.llm).toEqual({ "gemini/flash": { in: 20, out: 2 } });
     expect(r.profiles).toEqual({ [PROFILE]: { in: 3, out: 3, cached: 3, cost: 0.5 } });
     expect(r.processes[0]).toEqual({ pid: 20, parent: 1, name: "bun", cpu: 20, memory: 200, owner: { kind: "platform" } });
-    // The others were in one sample only and average over that one; five of eight stay.
-    expect(r.processes.length).toBe(6);
-    expect(r.processes.slice(1).map((p) => p.pid)).toEqual([507, 506, 505, 504, 503]);
+    // The others were in one sample only and average over that one; the twenty busiest of twenty-five stay.
+    expect(r.processes.length).toBe(21);
+    expect(r.processes.slice(1).map((p) => p.pid)).toEqual(Array.from({ length: 20 }, (_, i) => 505 + i));
     expect(rollup([], NODE, minute)).toBeUndefined();
   });
 
