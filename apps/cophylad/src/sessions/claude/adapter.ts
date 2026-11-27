@@ -57,12 +57,18 @@ const SUBAGENT_READ_MS = 10000;
 const SUBAGENT_LIVE_MS = 3000;
 /** How long since its last step a sub-agent that never said it finished still counts as working. */
 const SUBAGENT_LIVE_FOR_MS = 15 * 60_000;
+/** What a pass of the sub-agents' transcripts does before its budget can end it: so many transcripts looked at, or so much read. */
+const SUBAGENT_PASS_FILES = 32;
+const SUBAGENT_PASS_BYTES = 256 * 1024;
 /** How long a transcript left behind (the session ended, cleared, or resumed another) is read on for Claude's cost record. */
 const CLOSING_READ_MS = 30000;
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 /** How long a tick reads transcripts before it lets the loop turn. */
 const TICK_BUDGET_MS = 8;
+
+/** How long a pass of a session's sub-agents' transcripts reads before the next tick goes on (a test makes it nothing). */
+export const subagentPace = { budgetMs: TICK_BUDGET_MS };
 
 /** The sub-agents' transcripts read into one parser's usage, and when they were last read. */
 interface SubagentTails {
@@ -77,8 +83,10 @@ interface SubagentTails {
    * the middle of a pass; what it found goes out at the pass's end, as any other read's does.
    */
   unsent?: boolean;
-  /** Where the next pass starts in the list of transcripts: one cut short by its budget goes on from there. */
-  next?: number;
+  /** A pass under way: the transcripts it reads in order, and how far it has got. */
+  pass?: { files: string[]; i: number };
+  /** Until when one of them counts as working (not finished, a step in the last while): passes come quicker until then. */
+  workingUntil: number;
 }
 
 /**
@@ -199,6 +207,8 @@ export class ClaudeAdapter implements HarnessAdapter {
   /** By the parser they feed: a parser made again (a cleared context, a transcript read again) reads them again from the start. */
   private subagents = new WeakMap<ClaudeTranscriptState, SubagentTails>();
   private closing: Closing[] = [];
+  /** The parsers whose cost record waits for their sub-agents to be read. */
+  private readonly holding = new WeakSet<ClaudeTranscriptState>();
   private ledger: SpendSink | undefined;
   /** By the parser that feeds it. */
   private feeds = new WeakMap<ClaudeTranscriptState, SpendFeed>();
@@ -291,7 +301,9 @@ export class ClaudeAdapter implements HarnessAdapter {
     this.installed.clear();
   }
 
-  async tick(now: number): Promise<void> {
+  async tick(now: number, opts: { slice?: boolean } = {}): Promise<void> {
+    // a tick for the rest of a transcript read in slices reads transcripts alone
+    if (opts.slice) return this.tailTranscripts(now);
     const seen = new Set<string>();
     const spares = new Set<number>();
     const windows: { pid: number }[] = [];
@@ -339,8 +351,14 @@ export class ClaudeAdapter implements HarnessAdapter {
       const last = rec.lastHookAt ?? rec.session.lastActivity;
       if (now - last > this.host.config.claude_hook_grace_ms) this.host.end(rec, "inactive", now);
     }
-    // The transcripts, a turn of the loop between them once the tick has had its budget: a
-    // tick meeting many sessions at a start never holds the daemon's thread for all of them.
+    await this.tailTranscripts(now);
+  }
+
+  /**
+   * The transcripts, a turn of the loop between them once the tick has had its budget: a tick
+   * meeting many sessions at a start never holds the daemon's thread for all of them.
+   */
+  private async tailTranscripts(now: number): Promise<void> {
     let sliceAt = performance.now();
     for (const rec of this.host.records("claude")) {
       withTask("sessions: claude transcript", () => this.tailTranscript(rec, now));
@@ -524,6 +542,18 @@ export class ClaudeAdapter implements HarnessAdapter {
       this.host.watch(dirname(path));
     }
     const state = rec.parser as ClaudeTranscriptState;
+    // A cost record waits for the sub-agents' transcripts to be read to their ends, a slice a
+    // tick, and the transcript is read on from it once they are.
+    let caughtUp = false;
+    if (this.holding.has(state)) {
+      if (!this.tailSubagents(state, path, now, true)) {
+        tailPace.sliced = true;
+        return;
+      }
+      this.holding.delete(state);
+      caughtUp = true;
+    }
+    let held = false;
     const feed = this.feedOf(state, path);
     const lines = tail.read();
     const recordFrom = tail.recordFrom;
@@ -538,9 +568,20 @@ export class ClaudeAdapter implements HarnessAdapter {
       const record = line.offset >= recordFrom;
       // History a job was forked with: counted in its stats, but recorded under the old id already.
       const copied = rec.copiedBefore !== undefined && (rowAt(row) ?? Infinity) < rec.copiedBefore;
+      // Claude's cost record counts the sub-agents' calls up to it: they are read first.
+      if (isCostRecord(row) && this.price && !caughtUp) {
+        if (!this.tailSubagents(state, path, now, true)) {
+          tail.rewind(line.offset);
+          this.holding.add(state);
+          tailPace.sliced = true;
+          held = true;
+          break;
+        }
+        caughtUp = true;
+      }
       // The ledger has what is before its mark, and the history a job was forked with is its parent's.
       if (feed) this.feedLine(state, feed, row, line.offset >= feed.mark && !copied);
-      if (isCostRecord(row)) this.settleCost(state, path, row, now);
+      if (isCostRecord(row)) this.settleCost(state, row, now);
       for (const item of applyClaudeRow(state, row)) {
         if (copied) continue;
         switch (item.kind) {
@@ -602,7 +643,7 @@ export class ClaudeAdapter implements HarnessAdapter {
     }
     state.onUsage = undefined;
     // Its sub-agents after its own lines: the launches those name are known by then.
-    this.tailSubagents(state, path, now);
+    if (!held) this.tailSubagents(state, path, now);
     const subs = this.subagents.get(state);
     if (subs?.unsent) {
       subs.unsent = false;
@@ -672,94 +713,120 @@ export class ClaudeAdapter implements HarnessAdapter {
   /**
    * Reads the session's sub-agents' transcripts into its usage: at once for a parser that has
    * not read them, then every `SUBAGENT_READ_MS`, the folders looked in again each time for a
-   * sub-agent started since. A change to what `subagents` lists marks it `unsent`.
+   * sub-agent started since. A change to what `subagents` lists marks it `unsent`. A pass reads
+   * in the tick's budget, the ones at work first: a conversation of hundreds of sub-agents, met
+   * at a start, has hundreds of megabytes in them, so a pass goes on at the next tick from where
+   * it stopped. `force` starts one when none is under way. Whether every one is read to its end.
    */
-  private tailSubagents(state: ClaudeTranscriptState, path: string, now: number, force = false): void {
+  private tailSubagents(state: ClaudeTranscriptState, path: string, now: number, force = false): boolean {
     let subs = this.subagents.get(state);
     if (!subs) {
-      subs = { tails: new Map(), readAt: -Infinity, info: new Map(), runs: new Map() };
+      subs = { tails: new Map(), readAt: -Infinity, info: new Map(), runs: new Map(), workingUntil: 0 };
       this.subagents.set(state, subs);
     }
-    // One working shows on a card: one that has not finished, but did something in the last while.
-    const working = [...subs.runs.values()].some((r) => r.call !== undefined && !r.finished && now - r.lastAt < SUBAGENT_LIVE_FOR_MS);
-    if (!force && now - subs.readAt < (working ? SUBAGENT_LIVE_MS : SUBAGENT_READ_MS)) return;
-    subs.readAt = now;
-    let changed = false;
-    const feed = this.feeds.get(state);
-    const files = subagentTranscripts(path);
-    const fresh = files.filter((f) => !subs.tails.has(f));
-    if (fresh.length > 0) {
-      const infos = fresh.map((f) => subagentInfo(path, f));
-      const marks = feed && this.ledger ? this.ledger.marks(infos.map((i) => `${feed.key}/${i.key}`)) : new Map<string, number>();
-      fresh.forEach((f, i) => {
-        subs.tails.set(f, new Tail(f));
-        const info = infos[i]!;
-        subs.info.set(f, { ...info, mark: feed ? (marks.get(`${feed.key}/${info.key}`) ?? 0) : 0, trigger: state.trigger });
-      });
+    if (!subs.pass) {
+      // One working shows on a card: one that has not finished, but did something in the last while.
+      if (!force && now - subs.readAt < (now < subs.workingUntil ? SUBAGENT_LIVE_MS : SUBAGENT_READ_MS)) return true;
+      subs.readAt = now;
+      const runs = subs.runs;
+      // those at work first, then the ones never read, then the finished
+      const rank = (f: string) => {
+        const run = runs.get(f);
+        return run === undefined ? 1 : run.finished ? 2 : 0;
+      };
+      const files = subagentTranscripts(path).map((f, i) => ({ f, i, r: rank(f) }));
+      files.sort((a, b) => a.r - b.r || a.i - b.i);
+      subs.pass = { files: files.map((x) => x.f), i: 0 };
     }
+    const pass = subs.pass;
+    const deadline = performance.now() + subagentPace.budgetMs;
+    // Past its budget once it has done enough to say so: a few small transcripts are read whole.
+    let visited = 0;
+    let bytes = 0;
+    const spent = () => (visited >= SUBAGENT_PASS_FILES || bytes >= SUBAGENT_PASS_BYTES) && performance.now() > deadline;
+    const feed = this.feeds.get(state);
     // A line of the conversation's own may be counting for the ledger: kept for it after.
     const keep = state.onUsage;
-    // A conversation with dozens of sub-agents, met at a start, has megabytes in each: the pass
-    // reads them in its budget, from where the last one stopped, and the next tick goes on.
-    const deadline = performance.now() + TICK_BUDGET_MS;
-    const from = files.length > 0 ? (subs.next ?? 0) % files.length : 0;
-    for (let n = 0; n < files.length; n++) {
-      if (n > 0 && performance.now() > deadline) {
-        subs.next = (from + n) % files.length;
-        subs.readAt = -Infinity;
-        tailPace.sliced = true;
-        break;
+    let changed = false;
+    try {
+      for (; pass.i < pass.files.length; pass.i++) {
+        if (spent()) return false;
+        visited++;
+        const file = pass.files[pass.i]!;
+        let tail = subs.tails.get(file);
+        let info = subs.info.get(file);
+        if (!tail || !info) {
+          const met = subagentInfo(path, file);
+          const key = feed ? `${feed.key}/${met.key}` : "";
+          info = { ...met, mark: feed && this.ledger ? (this.ledger.marks([key]).get(key) ?? 0) : 0, trigger: state.trigger };
+          tail = new Tail(file);
+          subs.tails.set(file, tail);
+          subs.info.set(file, info);
+        }
+        let run = subs.runs.get(file);
+        if (!run) subs.runs.set(file, (run = { agent: info.id, steps: 0, startedAt: 0, lastAt: 0 }));
+        // One that has finished and is read to its end is looked at by its size alone.
+        if (run.finished && run.call !== undefined && tail.unchanged()) continue;
+        let metaRead = false;
+        for (;;) {
+          const lines = tail.read();
+          // Its meta names the call that started it as it starts, what it is and was asked, and says
+          // when it has finished. One that has finished is asked again when it writes again: sent more
+          // work (`SendMessage` to it), it goes on in the same transcript, and Claude rewrites its meta
+          // without `finished` until it stops again.
+          if (!metaRead && (run.call === undefined || !run.finished || lines.length > 0)) {
+            metaRead = true;
+            const meta = subagentMeta(file);
+            if (meta.call !== undefined && meta.call !== run.call) {
+              run.call = meta.call;
+              changed = true;
+            }
+            if (meta.type !== undefined && meta.type !== run.type) {
+              run.type = meta.type;
+              changed = true;
+            }
+            if (meta.description !== undefined && meta.description !== run.description) {
+              run.description = meta.description;
+              changed = true;
+            }
+            if (meta.finished === true && !run.finished) {
+              run.finished = true;
+              changed = true;
+            } else if (run.finished && meta.finished !== true && meta.call !== undefined) {
+              // A meta read whole that no longer says so: resumed. One not read (being rewritten) names no call, and says nothing.
+              delete run.finished;
+              changed = true;
+            }
+          }
+          for (const line of lines) {
+            bytes += line.text.length;
+            state.onUsage = feed && line.offset >= info.mark ? (u) => feed.calls.push(u) : undefined;
+            try {
+              const row = JSON.parse(line.text) as unknown;
+              applyClaudeUsage(state, row, { agent: info.agent, trigger: state.agentTriggers.get(info.id) ?? info.trigger });
+              if (countSubagentRow(run, row) && run.call !== undefined) changed = true;
+            } catch {
+              // a line that is not JSON counts nothing
+            }
+          }
+          if (feed && tail.consumed > info.mark) {
+            info.mark = tail.consumed;
+            feed.marks.set(`${feed.key}/${info.key}`, tail.consumed);
+          }
+          if (!tail.behind) break;
+          // longer than one read: the rest in this budget, or from here at the next tick
+          if (spent()) return false;
+        }
       }
-      const file = files[(from + n) % files.length]!;
-      const tail = subs.tails.get(file)!;
-      const info = subs.info.get(file)!;
-      let run = subs.runs.get(file);
-      if (!run) subs.runs.set(file, (run = { agent: info.id, steps: 0, startedAt: 0, lastAt: 0 }));
-      const lines = tail.read();
-      // Its meta names the call that started it as it starts, what it is and was asked, and says
-      // when it has finished. One that has finished is asked again when it writes again: sent more
-      // work (`SendMessage` to it), it goes on in the same transcript, and Claude rewrites its meta
-      // without `finished` until it stops again.
-      if (run.call === undefined || !run.finished || lines.length > 0) {
-        const meta = subagentMeta(file);
-        if (meta.call !== undefined && meta.call !== run.call) {
-          run.call = meta.call;
-          changed = true;
-        }
-        if (meta.type !== undefined && meta.type !== run.type) {
-          run.type = meta.type;
-          changed = true;
-        }
-        if (meta.description !== undefined && meta.description !== run.description) {
-          run.description = meta.description;
-          changed = true;
-        }
-        if (meta.finished === true && !run.finished) {
-          run.finished = true;
-          changed = true;
-        } else if (run.finished && meta.finished !== true && meta.call !== undefined) {
-          // A meta read whole that no longer says so: resumed. One not read (being rewritten) names no call, and says nothing.
-          delete run.finished;
-          changed = true;
-        }
-      }
-      for (const line of lines) {
-        state.onUsage = feed && line.offset >= info.mark ? (u) => feed.calls.push(u) : undefined;
-        try {
-          const row = JSON.parse(line.text) as unknown;
-          applyClaudeUsage(state, row, { agent: info.agent, trigger: state.agentTriggers.get(info.id) ?? info.trigger });
-          if (countSubagentRow(run, row) && run.call !== undefined) changed = true;
-        } catch {
-          // a line that is not JSON counts nothing
-        }
-      }
-      if (feed && tail.consumed > info.mark) {
-        info.mark = tail.consumed;
-        feed.marks.set(`${feed.key}/${info.key}`, tail.consumed);
-      }
+    } finally {
+      state.onUsage = keep;
+      if (changed) subs.unsent = true;
     }
-    state.onUsage = keep;
-    if (changed) subs.unsent = true;
+    subs.pass = undefined;
+    let until = 0;
+    for (const r of subs.runs.values()) if (r.call !== undefined && !r.finished) until = Math.max(until, r.lastAt + SUBAGENT_LIVE_FOR_MS);
+    subs.workingUntil = until;
+    return true;
   }
 
   /** The session's sub-agents as its `subagents` lists them: those whose call is known, the newest last, as many as the protocol takes. */
@@ -787,10 +854,10 @@ export class ClaudeAdapter implements HarnessAdapter {
    * first, so the record is set against all the usage it covers, then what it holds beyond
    * that counts as the session's (`applyClaudeCostRecord`).
    */
-  private settleCost(state: ClaudeTranscriptState, path: string, row: unknown, now: number): void {
+  /** Claude's cost record, settled against the usage counted up to it: its caller has read the sub-agents' transcripts to their ends. */
+  private settleCost(state: ClaudeTranscriptState, row: unknown, now: number): void {
     if (!this.price) return;
     const counts = state.onUsage !== undefined;
-    this.tailSubagents(state, path, now, true);
     const was = state.unrecorded ?? { cost: 0, in: 0, out: 0, cacheRead: 0, cacheWrite: 0 };
     if (!applyClaudeCostRecord(state, row, this.price)) return;
     const feed = this.feeds.get(state);
@@ -832,8 +899,14 @@ export class ClaudeAdapter implements HarnessAdapter {
         } catch {
           continue;
         }
+        // its sub-agents read to their ends first, as an open transcript's are, a slice a tick
+        if (isCostRecord(row) && !this.tailSubagents(c.state, c.tail.path, now, true)) {
+          c.tail.rewind(line.offset);
+          tailPace.sliced = true;
+          break;
+        }
         if (feed) this.feedLine(c.state, feed, row, line.offset >= feed.mark);
-        if (isCostRecord(row)) this.settleCost(c.state, c.tail.path, row, now);
+        if (isCostRecord(row)) this.settleCost(c.state, row, now);
         else applyClaudeUsage(c.state, row, { agent: "main", trigger: c.state.trigger });
       }
       this.commitSpend(c.rec, c.state, now, c.tail);

@@ -19,7 +19,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ClaudeHookEvent, Session, SessionEvent } from "@cophyla/protocol";
 import { createLogger } from "../src/log.ts";
-import { ClaudeAdapter, claudeConfigDirOf, countOn, namesOneMModel, subagentTranscripts } from "../src/sessions/claude/adapter.ts";
+import { ClaudeAdapter, claudeConfigDirOf, countOn, namesOneMModel, subagentPace, subagentTranscripts } from "../src/sessions/claude/adapter.ts";
 import { installClaudeHooks, isCophyladGroup, isOwnGroup, readSettings, uninstallClaudeHooks, withCophyladHooks, withoutCophyladHooks } from "../src/sessions/claude/hooks.ts";
 import { claudeFrames, injectClaude } from "../src/sessions/claude/inject.ts";
 import { readRegistry, transcriptDirName, transcriptPathFor } from "../src/sessions/claude/registry.ts";
@@ -738,6 +738,37 @@ describe("claude adapter prices a session with its sub-agents", () => {
     s = mini.sessions.get(id)!;
     expect(s.stats!.cost).toBeCloseTo(opus + sonnet + 0.5, 6);
     expect(s.stats!.tokens).toEqual({ in: 2110, out: 1100, cacheRead: 50_000 });
+  });
+
+  test("a cost record behind more sub-agents than a pass reads in its budget waits for them, and what follows it with it", async () => {
+    alive.add(509);
+    writeRegistry(registry, { pid: 509, sessionId: "sess-many", cwd });
+    const path = transcriptPathFor(profileDir, cwd, "sess-many");
+    const subs = join(path.replace(/\.jsonl$/, ""), "subagents");
+    mkdirSync(subs, { recursive: true });
+    for (let i = 0; i < 40; i++) writeFileSync(join(subs, `agent-m${i}.jsonl`), row(`msg_m${i}`, "claude-sonnet-5-5", { input_tokens: 100, output_tokens: 100 }, { isSidechain: true }) + "\n");
+    const opus = (10 * 4 + 1000 * 20) / 1e6;
+    const sonnet = (100 * 2 + 100 * 10) / 1e6;
+    writeFileSync(path, [row("msg_n1", "claude-opus-5-5", { input_tokens: 10, output_tokens: 1000 }), costRecord("sess-many", opus + 40 * sonnet + 0.5), row("msg_n2", "claude-opus-5-5", { input_tokens: 10, output_tokens: 1000 })].join("\n") + "\n");
+    // every pass ends as soon as it may: 32 transcripts a tick
+    subagentPace.budgetMs = -1;
+    try {
+      clock += 1000;
+      await mini.sessions.tick();
+      const id = mini.sessions.list().find((x) => x.native.id === "sess-many")!.id;
+      // the record and the turn after it wait for the eight sub-agents not read yet
+      expect(mini.sessions.get(id)!.stats!.cost).toBeCloseTo(opus + 32 * sonnet, 6);
+      clock += 1000;
+      await mini.sessions.tick();
+      expect(mini.sessions.get(id)!.stats!.cost).toBeCloseTo(2 * opus + 40 * sonnet + 0.5, 6);
+      // nothing counted twice as the passes go on
+      clock += 20_000;
+      await mini.sessions.tick();
+      await mini.sessions.tick();
+      expect(mini.sessions.get(id)!.stats!.cost).toBeCloseTo(2 * opus + 40 * sonnet + 0.5, 6);
+    } finally {
+      subagentPace.budgetMs = 8;
+    }
   });
 
   test("a record Claude writes just after a clear is read from the transcript left behind, and the new one counts on from it", async () => {

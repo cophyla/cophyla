@@ -248,7 +248,8 @@ export interface HarnessAdapter {
   sync?(profiles: HarnessProfile[], hooks: HookInstallSpec | undefined, change: ProfileChange): Promise<void>;
   stop(): Promise<void>;
   /** One discovery and tail pass. */
-  tick(now: number): Promise<void>;
+  /** `slice`: a tick for the rest of a transcript read in slices; an adapter may read transcripts alone. */
+  tick(now: number, opts?: { slice?: boolean }): Promise<void>;
   send(rec: SessionRecord, text: string, ref: string): Promise<SendOutcome>;
   /** Takes a message back when no receipt came. Codex only. */
   withdraw?(rec: SessionRecord, ref: string): Promise<void>;

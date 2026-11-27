@@ -121,6 +121,31 @@ export class Tail {
     return this.partial.length > 0 ? this.partialStart : this.offset;
   }
 
+  /** What the last read left of the file for the next. */
+  private behindBy = 0;
+
+  /** Whether the last read left more of the file than one read takes. */
+  get behind(): boolean {
+    return this.behindBy > 0;
+  }
+
+  /** Whether the file is the size the last read left it: nothing to read, told by its size alone (no open). */
+  unchanged(): boolean {
+    try {
+      return statSync(this.path).size === this.offset;
+    } catch {
+      return true;
+    }
+  }
+
+  /** Reads again from `offset`, the start of a line handed out by the last read that its reader did not take. */
+  rewind(offset: number): void {
+    this.offset = offset;
+    this.partial = Buffer.alloc(0);
+    this.partialStart = 0;
+    this.behindBy = 1;
+  }
+
   /**
    * Whether the file holds a complete line past `offset`, or shrank below it: something wrote
    * to it after a tail stopped there. A partial line alone is not enough.
@@ -190,12 +215,12 @@ export class Tail {
       const startOffset = this.partial.length > 0 ? this.partialStart : this.offset;
       const data = this.partial.length > 0 ? Buffer.concat([this.partial, chunk]) : chunk;
       this.offset += read;
-      if (this.offset < size) tailPace.sliced = true;
+      this.behindBy = size - this.offset;
+      if (this.behindBy > 0) tailPace.sliced = true;
 
       const lines: TailLine[] = [];
       let lineStart = 0;
-      for (let i = 0; i < data.length; i++) {
-        if (data[i] !== NL) continue;
+      for (let i = data.indexOf(NL); i !== -1; i = data.indexOf(NL, lineStart)) {
         let end = i;
         if (end > lineStart && data[end - 1] === 0x0d) end--;
         if (end > lineStart) lines.push({ text: data.subarray(lineStart, end).toString("utf8"), offset: startOffset + lineStart });

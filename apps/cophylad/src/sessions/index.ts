@@ -469,6 +469,8 @@ const MODE_PRESSES = 8;
 
 /** Between discovery passes while waiting for a session started in a terminal to register. */
 const TERMINAL_POLL_MS = 250;
+/** The longest pause between the slices of a transcript read in slices. */
+const SLICE_PAUSE_MAX_MS = 50;
 
 /** How long a session started in a terminal is still recognised as that session, long past the wait for it. */
 const TERMINAL_EXPECT_MS = 1800000;
@@ -875,16 +877,33 @@ export class Sessions implements SessionHost {
     return rec;
   }
 
-  /** One discovery and tail pass over every adapter. Exposed for tests. */
-  async tick(): Promise<void> {
+  /**
+   * One discovery and tail pass over every adapter. Exposed for tests. A tick for the rest of a
+   * transcript read in slices (`slice`) reads transcripts alone, and comes after a pause as long
+   * as the last one took: catching up on hundreds of megabytes takes half the thread at most.
+   */
+  async tick(opts: { slice?: boolean } = {}): Promise<void> {
     if (this.stopped) return;
     if (this.ticking) {
-      this.tickAgain = true;
+      if (!opts.slice) this.tickAgain = true;
       return;
     }
     this.ticking = true;
+    const startedAt = performance.now();
     try {
       const now = this.now();
+      if (opts.slice) {
+        tailPace.sliced = false;
+        for (const adapter of this.adapters.values()) {
+          try {
+            await adapter.tick(now, { slice: true });
+          } catch (e) {
+            this.log.error("adapter tick failed", { harness: adapter.harness, error: e });
+          }
+        }
+        if (tailPace.sliced) this.sliceAgain = true;
+        return;
+      }
       // A login file that changed rebuilds the profiles; the adapters take any change before they tick.
       if (now - this.profilesCheckedAt >= PROFILES_CHECK_MS) {
         this.profilesCheckedAt = now;
@@ -906,16 +925,23 @@ export class Sessions implements SessionHost {
         }
       }
       this.readDialogs();
-      // a transcript read a slice of: the rest on the next turn, not the next poll
-      if (tailPace.sliced) this.tickAgain = true;
+      // a transcript read a slice of: the rest soon, not the next poll
+      if (tailPace.sliced) this.sliceAgain = true;
     } finally {
       this.ticking = false;
       if (this.tickAgain) {
         this.tickAgain = false;
+        this.sliceAgain = false;
         setTimeout(() => void this.tick(), 0);
+      } else if (this.sliceAgain && !this.stopped) {
+        this.sliceAgain = false;
+        setTimeout(() => void this.tick({ slice: true }), Math.min(SLICE_PAUSE_MAX_MS, Math.round(performance.now() - startedAt)));
       }
     }
   }
+
+  /** A slice of a transcript read: the next comes after a pause, at most this. */
+  private sliceAgain = false;
 
   /** The sessions whose screen is being read for `dialog`: one read at a time per session, so a slow terminal is not read again each tick. */
   private readonly dialogReads = new Set<string>();
